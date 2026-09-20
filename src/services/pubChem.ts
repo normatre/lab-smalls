@@ -335,7 +335,8 @@ function scoreCandidate(candidate: string) {
   const lower = candidate.toLowerCase();
   let score = 0;
   if (/^\d{2,7}-\d{2}-\d$/.test(lower)) score += 100;
-  if (/\b(acid|alcohol|acetone|methanol|ethanol|hydroxide|chloride|sulfate|sulphate|nitrate|carbonate|phosphate|oxide|peroxide|serum|buffer|medium|solution)\b/.test(lower)) score += 35;
+  if (/\b(acid|alcohol|acetone|methanol|ethanol|hydroxide|chloride|sulfate|sulphate|sulfonate|sulphonate|dodecane|dodecyl|nitrate|carbonate|phosphate|oxide|peroxide|serum|buffer|medium|solution)\b/.test(lower)) score += 35;
+  if (/\b\d+-[a-z]/i.test(candidate)) score += 26;
   if (/^[a-z][a-z\s,+-]+$/i.test(candidate)) score += 20;
   const wordCount = candidate.split(/\s+/).length;
   if (wordCount >= 2 && wordCount <= 5) score += 18;
@@ -378,7 +379,7 @@ function inferPhysicalState(text: string): PhysicalState {
   const lower = text.toLowerCase();
   if (/\b(gas|compressed gas|anhydrous gas)\b/.test(lower)) return "Gas";
   if (/\b(solution|aqueous|acid|solvent|alcohol|ether|chloroform|acetone|methanol|ethanol|toluene|xylene|water)\b/.test(lower)) return "Liquid";
-  if (/\b(chloride|sulfate|sulphate|hydroxide|carbonate|nitrate|phosphate|powder|crystal|solid|salt|pellets|granules)\b/.test(lower)) return "Solid";
+  if (/\b(chloride|sulfate|sulphate|sulfonate|sulphonate|hydroxide|carbonate|nitrate|phosphate|powder|crystal|solid|salt|pellets|granules)\b/.test(lower)) return "Solid";
   return "Unknown";
 }
 

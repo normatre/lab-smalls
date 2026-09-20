@@ -33,6 +33,7 @@ const chemicalCatalog: ChemicalReference[] = [
   { name: "Nitric Acid", aliases: ["nitric acid", "hno3"], state: "Liquid", cas: "7697-37-2", un: "UN2031" },
   { name: "Sodium Hydroxide", aliases: ["sodium hydroxide", "naoh", "caustic soda"], state: "Solid", cas: "1310-73-2", un: "UN1823" },
   { name: "Potassium Hydroxide", aliases: ["potassium hydroxide", "koh"], state: "Solid", cas: "1310-58-3", un: "UN1813" },
+  { name: "Sodium 1-Dodecanesulfonate", aliases: ["sodium 1-dodecanesulfonate", "sodium dodecanesulfonate", "1-dodecanesulfonic acid sodium salt", "dodecanesulfonate"], state: "Solid" },
   { name: "Ammonia Solution", aliases: ["ammonia solution", "ammonium hydroxide", "nh4oh"], state: "Liquid", cas: "1336-21-6", un: "UN2672" },
   { name: "Toluene", aliases: ["toluene", "methylbenzene"], state: "Liquid", cas: "108-88-3", un: "UN1294" },
   { name: "Xylene", aliases: ["xylene", "xylenes"], state: "Liquid", cas: "1330-20-7", un: "UN1307" },
@@ -214,7 +215,7 @@ async function requestVisionExtraction(imageUrl: string, apiKey?: string): Promi
             content: [
               {
                 type: "input_text",
-                text: "Read this lab chemical container label. Extract the real chemical/product name, not grade/quality text such as ACS reagent, reagent grade, powder, 99+%, certified, for analysis, lot, expiry, or hazard text. Return only compact JSON with keys: chemicalName, quantity, containerSize, unit, physicalState, manufacturer, catalogNumber, casNumber, unNumber, grade, confidence. unit must be one of g, kg, mL, L. physicalState must be Solid, Liquid, Gas, or Unknown.",
+                text: "Read this lab chemical container label. Extract the exact real chemical/product name, not grade/quality text such as ACS reagent, ReagentPlus, reagent grade, powder, 99+%, certified, for analysis, lot, expiry, or hazard text. Preserve full numbered names and salts exactly, for example Sodium 1-dodecanesulfonate must not be simplified to Sodium hydroxide or Sodium chloride. Return only compact JSON with keys: chemicalName, quantity, containerSize, unit, physicalState, manufacturer, catalogNumber, casNumber, unNumber, grade, confidence. unit must be one of g, kg, mL, L. physicalState must be Solid, Liquid, Gas, or Unknown.",
               },
               { type: "input_image", image_url: imageUrl },
             ],
@@ -379,7 +380,9 @@ async function parseLabelText(text: string): Promise<{ item: DetectedChemical | 
   const manufacturer = labProduct?.manufacturer ?? inferManufacturer(normalized) ?? pubChem?.source;
   const catalogNumber = extractCatalogNumber(normalized) ?? labProduct?.catalogNumbers[0] ?? (pubChem?.cid && pubChem.cid > 0 ? `PubChem CID ${pubChem.cid}` : null);
   const labelName = extractLikelyLabelName(text);
-  const name = labProduct?.name ?? pubChem?.name ?? reference?.name ?? labelName;
+  const usableReference = reference && !namesConflict(labelName, reference.name) ? reference : null;
+  const usableDatabase = pubChem && !namesConflict(labelName, pubChem.name) ? pubChem : null;
+  const name = labProduct?.name ?? usableDatabase?.name ?? usableReference?.name ?? labelName;
   const confidence = scoreExtraction(Boolean(name), Boolean(size), Boolean(quantity), state !== "Unknown", Boolean(pubChem) || Boolean(labProduct));
 
   if (!name && !size) {
@@ -390,7 +393,8 @@ async function parseLabelText(text: string): Promise<{ item: DetectedChemical | 
     warnings: [
       !reference && !pubChem && !labProduct ? "Chemical/product name was not matched to the built-in catalogues or external databases." : "",
       labProduct ? `Matched lab product catalogue${catalogNumber ? ` (${catalogNumber})` : ""}.` : "",
-      pubChem ? `Matched ${pubChem.source ?? "chemical database"}${pubChem.cid > 0 ? ` CID ${pubChem.cid}` : ""}${pubChem.iupacName ? ` (${pubChem.iupacName})` : ""}.` : "",
+      usableDatabase ? `Matched ${usableDatabase.source ?? "chemical database"}${usableDatabase.cid > 0 ? ` CID ${usableDatabase.cid}` : ""}${usableDatabase.iupacName ? ` (${usableDatabase.iupacName})` : ""}.` : "",
+      pubChem && !usableDatabase ? `Rejected conflicting database match (${pubChem.name}) because the label name looked more specific.` : "",
       !size ? "Container size was not found on the label." : "",
       state === "Unknown" ? "Physical state could not be inferred from label/catalogue." : "",
     ].filter(Boolean),
@@ -405,7 +409,7 @@ async function parseLabelText(text: string): Promise<{ item: DetectedChemical | 
       catalogNumber,
       cas,
       un,
-      source: pubChem || reference ? "database" : "image",
+      source: usableDatabase || usableReference ? "database" : "image",
     }),
   };
 }
@@ -447,6 +451,7 @@ function findLabProduct(text: string) {
 
 function fuzzyTokenScore(text: string, alias: string) {
   const tokens = alias.split(/\s+/);
+  if (tokens.length > 1 && !tokens.every((token) => token.length <= 2 || text.includes(token))) return 0;
   const matched = tokens.filter((token) => token.length > 2 && text.includes(token)).join(" ");
   return matched.length;
 }
@@ -509,14 +514,42 @@ function isLabelNoise(line: string) {
 function scoreLabelName(line: string) {
   const lower = line.toLowerCase();
   let score = 0;
-  if (/\b(acid|alcohol|acetone|methanol|ethanol|hydroxide|chloride|sulfate|sulphate|nitrate|carbonate|phosphate|oxide|peroxide|serum|buffer|medium|solution)\b/.test(lower)) score += 40;
+  if (/\b(acid|alcohol|acetone|methanol|ethanol|hydroxide|chloride|sulfate|sulphate|sulfonate|sulphonate|dodecane|dodecyl|nitrate|carbonate|phosphate|oxide|peroxide|serum|buffer|medium|solution)\b/.test(lower)) score += 40;
   const words = line.split(/\s+/).filter(Boolean);
   if (words.length >= 2 && words.length <= 6) score += 24;
+  if (/\b\d+-[a-z]/i.test(line)) score += 26;
   if (line === line.toUpperCase()) score += 12;
   if (/[a-zA-Z]{5,}/.test(line)) score += 12;
   if (/[0-9]/.test(line)) score -= 20;
   if (/\b(?:reagent|grade|powder|acs|a\.?\s*c\.?\s*s\.?|puriss?|certified)\b/i.test(line)) score -= 45;
   return score;
+}
+
+function namesConflict(labelName: string | null, databaseName: string) {
+  if (!labelName) return false;
+  const labelTokens = distinctiveTokens(labelName);
+  const databaseTokens = new Set(distinctiveTokens(databaseName));
+  if (labelTokens.length === 0) return false;
+  const missing = labelTokens.filter((token) => !databaseTokens.has(token));
+  return missing.length > 0 && labelTokens.length >= 1;
+}
+
+function distinctiveTokens(name: string) {
+  const generic = new Set(["sodium", "potassium", "calcium", "ammonium", "acid", "solution", "salt", "hydrate", "anhydrous"]);
+  return name
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, " ")
+    .split(/\s+/)
+    .map((token) => normalizeNameToken(token.replace(/^\d+-/, "")))
+    .filter((token) => token.length >= 5 && !generic.has(token));
+}
+
+function normalizeNameToken(token: string) {
+  return token
+    .replace(/sulfonate$/, "sulfon")
+    .replace(/sulfonic$/, "sulfon")
+    .replace(/sulphonate$/, "sulphon")
+    .replace(/sulphonic$/, "sulphon");
 }
 
 function titleCaseChemicalName(name: string) {

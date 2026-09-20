@@ -1,5 +1,5 @@
 const visionPrompt =
-  "Read this lab chemical container label. Extract the real chemical/product name, not grade/quality text such as ACS reagent, reagent grade, powder, 99+%, certified, for analysis, lot, expiry, or hazard text. Return only compact JSON with keys: chemicalName, quantity, containerSize, unit, physicalState, manufacturer, catalogNumber, casNumber, unNumber, grade, confidence. unit must be one of g, kg, mL, L. physicalState must be Solid, Liquid, Gas, or Unknown.";
+  "Read this lab chemical container label. Extract the exact real chemical/product name, not grade/quality text such as ACS reagent, ReagentPlus, reagent grade, powder, 99+%, certified, for analysis, lot, expiry, or hazard text. Preserve full numbered names and salts exactly, for example Sodium 1-dodecanesulfonate must not be simplified to Sodium hydroxide or Sodium chloride. Return only compact JSON with keys: chemicalName, quantity, containerSize, unit, physicalState, manufacturer, catalogNumber, casNumber, unNumber, grade, confidence. unit must be one of g, kg, mL, L. physicalState must be Solid, Liquid, Gas, or Unknown.";
 
 const worker = {
   async fetch(request, env) {
