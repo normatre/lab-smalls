@@ -30,6 +30,18 @@ export default function HomePage() {
   const activeDrums = drums.filter((drum) => drum.status !== "Completed");
   const completedDrums = drums.filter((drum) => drum.status === "Completed");
   const updateDrum = (updated: Drum) => { setDrums((current) => current.map((drum) => drum.id === updated.id ? updated : drum)); setSelectedDrumId(updated.id); };
+  const deleteDrum = (id: string) => {
+    const target = drums.find((drum) => drum.id === id);
+    if (!target) return;
+    const confirmed = window.confirm(`Delete drum ${target.drumId}? This removes it from this browser.`);
+    if (!confirmed) return;
+    setDrums((current) => {
+      const next = current.filter((drum) => drum.id !== id);
+      if (selectedDrumId === id) setSelectedDrumId(next[0]?.id ?? "");
+      return next;
+    });
+    if (view === "Active Drums" && selectedDrumId === id) setView("Dashboard");
+  };
 
   useEffect(() => {
     const stored = localStorage.getItem(storageKey);
@@ -78,10 +90,10 @@ export default function HomePage() {
         </aside>
         <section className="space-y-4 pb-28 lg:pb-4">
           <OfflineStatus online={online} pending={!online && activeDrums.length > 0} />
-          {view === "Dashboard" && <Dashboard drums={drums} onNew={() => setView("New Drum")} onContinue={(id) => { setSelectedDrumId(id); setView("Active Drums"); }} />}
+          {view === "Dashboard" && <Dashboard drums={drums} onNew={() => setView("New Drum")} onDelete={deleteDrum} onContinue={(id) => { setSelectedDrumId(id); setView("Active Drums"); }} />}
           {view === "New Drum" && <DrumForm nextNumber={drums.length + 1} operator="Demo Chemist" onCreate={createDrum} />}
-          {view === "Active Drums" && <ActiveDrums drums={activeDrums} selected={selectedDrum} onSelect={setSelectedDrumId} onUpdate={updateDrum} products={products} saveProduct={(product) => setProducts((current) => [product, ...current])} />}
-          {view === "History" && <HistoryView drums={completedDrums.length ? completedDrums : drums} onOpen={(id) => { setSelectedDrumId(id); setView("Active Drums"); }} />}
+          {view === "Active Drums" && <ActiveDrums drums={activeDrums} selected={selectedDrum} onSelect={setSelectedDrumId} onDelete={deleteDrum} onUpdate={updateDrum} products={products} saveProduct={(product) => setProducts((current) => [product, ...current])} />}
+          {view === "History" && <HistoryView drums={completedDrums.length ? completedDrums : drums} onDelete={deleteDrum} onOpen={(id) => { setSelectedDrumId(id); setView("Active Drums"); }} />}
           {view === "Product Database" && <ProductDatabase products={products} setProducts={setProducts} />}
           {view === "Settings" && <SettingsView retention={retention} setRetention={setRetention} role={role} resetDemo={() => { localStorage.removeItem(storageKey); setDrums(demoDrums); setProducts(demoProducts); setSelectedDrumId(demoDrums[0].id); }} />}
         </section>
@@ -111,10 +123,10 @@ function Metric({ label, value, urgent = false }: { label: string; value: number
 function MetricMini({ label, value }: { label: string; value: number }) {
   return <div className="rounded-lg border border-slate-200 bg-white p-3 text-center"><div className="text-2xl font-bold">{value}</div><div className="text-sm font-semibold text-slate-600">{label}</div></div>;
 }
-function Dashboard({ drums, onNew, onContinue }: { drums: Drum[]; onNew: () => void; onContinue: (id: string) => void }) {
+function Dashboard({ drums, onNew, onContinue, onDelete }: { drums: Drum[]; onNew: () => void; onContinue: (id: string) => void; onDelete: (id: string) => void }) {
   const reviewCount = drums.flatMap((drum) => drum.items).filter((item) => item.status !== "Confirmed").length;
   const active = drums.filter((d) => d.status === "Active");
-  return <div className="space-y-4"><section className="grid gap-3 md:grid-cols-2"><button onClick={onNew} className="rounded-lg bg-emerald-700 p-5 text-left text-white shadow-sm"><Plus size={30} /><strong className="mt-3 block text-2xl">Start new drum</strong><span className="mt-1 block text-sm text-emerald-50">Create ID, operator details, then begin scanning.</span></button><button onClick={() => active[0] && onContinue(active[0].id)} className="rounded-lg border border-slate-200 bg-white p-5 text-left shadow-sm disabled:opacity-50" disabled={!active[0]}><Archive size={30} className="text-slate-700" /><strong className="mt-3 block text-2xl">Continue active drum</strong><span className="mt-1 block text-sm text-slate-600">{active[0] ? `${active[0].drumId} has ${completionBlockers(active[0]).length} review blocker(s).` : "No active drums."}</span></button></section><div className="grid gap-3 sm:grid-cols-4"><Metric label="Active drums" value={active.length} /><Metric label="Completed today" value={drums.filter((d) => d.status === "Completed" && d.date === "2026-09-20").length} /><Metric label="Items requiring review" value={reviewCount} urgent={reviewCount > 0} /><Metric label="Recently completed" value={drums.filter((d) => d.status === "Completed").length} /></div><Panel title="Recently touched drums"><div className="space-y-3">{drums.map((drum) => <DrumListButton key={drum.id} drum={drum} onClick={() => onContinue(drum.id)} />)}</div></Panel></div>;
+  return <div className="space-y-4"><section className="grid gap-3 md:grid-cols-2"><button onClick={onNew} className="rounded-lg bg-emerald-700 p-5 text-left text-white shadow-sm"><Plus size={30} /><strong className="mt-3 block text-2xl">Start new drum</strong><span className="mt-1 block text-sm text-emerald-50">Create ID, operator details, then begin scanning.</span></button><button onClick={() => active[0] && onContinue(active[0].id)} className="rounded-lg border border-slate-200 bg-white p-5 text-left shadow-sm disabled:opacity-50" disabled={!active[0]}><Archive size={30} className="text-slate-700" /><strong className="mt-3 block text-2xl">Continue active drum</strong><span className="mt-1 block text-sm text-slate-600">{active[0] ? `${active[0].drumId} has ${completionBlockers(active[0]).length} review blocker(s).` : "No active drums."}</span></button></section><div className="grid gap-3 sm:grid-cols-4"><Metric label="Active drums" value={active.length} /><Metric label="Completed today" value={drums.filter((d) => d.status === "Completed" && d.date === "2026-09-20").length} /><Metric label="Items requiring review" value={reviewCount} urgent={reviewCount > 0} /><Metric label="Recently completed" value={drums.filter((d) => d.status === "Completed").length} /></div><Panel title="Recently touched drums"><div className="space-y-3">{drums.map((drum) => <DrumListButton key={drum.id} drum={drum} onClick={() => onContinue(drum.id)} onDelete={() => onDelete(drum.id)} />)}</div></Panel></div>;
 }
 function Label({ text, children }: { text: string; children: React.ReactNode }) {
   return <label className="grid gap-2 text-sm font-bold text-slate-700"><span>{text}</span>{children}</label>;
@@ -127,12 +139,13 @@ function DrumForm({ nextNumber, operator, onCreate }: { nextNumber: number; oper
   const [notes, setNotes] = useState("");
   return <Panel title="New Drum"><form className="grid gap-4" onSubmit={(e) => { e.preventDefault(); onCreate({ drumId, size, category: "Lab Smalls", operatorName, date, notes }); }}><Label text="Drum ID"><input className="input" value={drumId} onChange={(e) => setDrumId(e.target.value)} /></Label><Label text="Drum size"><select className="input" value={size} onChange={(e) => setSize(e.target.value as Drum["size"])}><option>30 L</option><option>60 L</option><option>205 L</option><option>Other</option></select></Label><Label text="Waste/category"><input className="input" value="Lab Smalls" readOnly /></Label><Label text="Operator name"><input className="input" value={operatorName} onChange={(e) => setOperatorName(e.target.value)} /></Label><Label text="Date"><input className="input" type="date" value={date} onChange={(e) => setDate(e.target.value)} /></Label><Label text="Optional notes"><textarea className="input min-h-28" value={notes} onChange={(e) => setNotes(e.target.value)} /></Label><button className="touch-button min-h-14 justify-center bg-emerald-700 text-white" type="submit"><Camera size={22} />START SCANNING</button></form></Panel>;
 }
-function DrumListButton({ drum, onClick }: { drum: Drum; onClick: () => void }) {
+function DrumListButton({ drum, onClick, onDelete }: { drum: Drum; onClick: () => void; onDelete?: () => void }) {
   const blockers = completionBlockers(drum).length;
-  return <button onClick={onClick} className="w-full rounded-lg border border-slate-200 bg-white p-4 text-left shadow-sm"><div className="flex items-center justify-between gap-3"><strong>{drum.drumId}</strong><ReviewBadge status={drum.status === "Completed" ? "Completed" : blockers ? "Review Required" : "Active"} /></div><div className="mt-1 text-sm text-slate-600">{totalContainers(drum)} containers · {drum.operatorName}</div></button>;
+  return <div className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm"><div className="flex items-start justify-between gap-3"><button onClick={onClick} className="min-h-11 flex-1 text-left"><strong>{drum.drumId}</strong><div className="mt-1 text-sm text-slate-600">{totalContainers(drum)} containers · {drum.operatorName}</div></button><div className="flex shrink-0 items-center gap-2"><ReviewBadge status={drum.status === "Completed" ? "Completed" : blockers ? "Review Required" : "Active"} />{onDelete && <button onClick={onDelete} className="inline-flex min-h-11 items-center gap-1 rounded-md border border-red-200 bg-white px-3 text-sm font-bold text-red-700"><Trash2 size={16} />Delete</button>}</div></div></div>;
 }
-function ActiveDrums({ drums, selected, onSelect, onUpdate, products, saveProduct }: { drums: Drum[]; selected: Drum; onSelect: (id: string) => void; onUpdate: (drum: Drum) => void; products: Product[]; saveProduct: (product: Product) => void }) {
-  return <div className="grid gap-4 xl:grid-cols-[300px_1fr]"><Panel title="Active Drums"><div className="space-y-3">{drums.map((drum) => <DrumListButton key={drum.id} drum={drum} onClick={() => onSelect(drum.id)} />)}</div></Panel><div className="space-y-4"><CameraScanner drum={selected} onUpdate={onUpdate} /><ReviewSection drum={selected} onUpdate={onUpdate} products={products} saveProduct={saveProduct} /><DrumSummary drum={selected} onUpdate={onUpdate} /></div></div>;
+function ActiveDrums({ drums, selected, onSelect, onDelete, onUpdate, products, saveProduct }: { drums: Drum[]; selected: Drum; onSelect: (id: string) => void; onDelete: (id: string) => void; onUpdate: (drum: Drum) => void; products: Product[]; saveProduct: (product: Product) => void }) {
+  if (!selected) return <Panel title="Active Drums"><p className="rounded-lg border border-slate-200 bg-slate-50 p-4 font-semibold text-slate-700">No active drum selected.</p></Panel>;
+  return <div className="grid gap-4 xl:grid-cols-[300px_1fr]"><Panel title="Active Drums"><div className="space-y-3">{drums.map((drum) => <DrumListButton key={drum.id} drum={drum} onClick={() => onSelect(drum.id)} onDelete={() => onDelete(drum.id)} />)}</div></Panel><div className="space-y-4"><CameraScanner drum={selected} onUpdate={onUpdate} /><ReviewSection drum={selected} onUpdate={onUpdate} products={products} saveProduct={saveProduct} /><DrumSummary drum={selected} onUpdate={onUpdate} /></div></div>;
 }
 function CameraScanner({ drum, onUpdate }: { drum: Drum; onUpdate: (drum: Drum) => void }) {
   const fileRef = useRef<HTMLInputElement>(null);
@@ -205,10 +218,10 @@ function blockerReasons(item: InventoryItem) {
 function ExportMenu({ drum }: { drum: Drum }) {
   return <div className="mt-4 grid gap-3 sm:grid-cols-4"><button className="touch-button border border-slate-300 bg-white" onClick={() => downloadPdf(drum)}><FileDown size={18} />PDF</button><button className="touch-button border border-slate-300 bg-white" onClick={() => downloadCsv(drum)}><FileDown size={18} />CSV</button><button className="touch-button border border-slate-300 bg-white" onClick={() => downloadXlsx(drum)}><FileDown size={18} />XLSX</button><button className="touch-button border border-slate-300 bg-white" onClick={openPrintView}><Printer size={18} />Print</button></div>;
 }
-function HistoryView({ drums, onOpen }: { drums: Drum[]; onOpen: (id: string) => void }) {
+function HistoryView({ drums, onOpen, onDelete }: { drums: Drum[]; onOpen: (id: string) => void; onDelete: (id: string) => void }) {
   const [query, setQuery] = useState("");
   const results = useMemo(() => drums.filter((drum) => [drum.drumId, drum.operatorName, drum.date, ...drum.items.flatMap((item) => [item.chemicalName.value, item.casNumber, item.unNumber])].join(" ").toLowerCase().includes(query.toLowerCase())), [drums, query]);
-  return <Panel title="Searchable History"><div className="relative mb-4"><Search className="absolute left-3 top-4 text-slate-500" size={20} /><input className="input pl-11" placeholder="Search drum ID, chemical, date, operator, CAS, UN" value={query} onChange={(e) => setQuery(e.target.value)} /></div><div className="space-y-3">{results.map((drum) => <DrumListButton key={drum.id} drum={drum} onClick={() => onOpen(drum.id)} />)}</div></Panel>;
+  return <Panel title="Searchable History"><div className="relative mb-4"><Search className="absolute left-3 top-4 text-slate-500" size={20} /><input className="input pl-11" placeholder="Search drum ID, chemical, date, operator, CAS, UN" value={query} onChange={(e) => setQuery(e.target.value)} /></div><div className="space-y-3">{results.map((drum) => <DrumListButton key={drum.id} drum={drum} onClick={() => onOpen(drum.id)} onDelete={() => onDelete(drum.id)} />)}</div></Panel>;
 }
 function ProductDatabase({ products, setProducts }: { products: Product[]; setProducts: (products: Product[]) => void }) {
   const [query, setQuery] = useState("");
