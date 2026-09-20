@@ -1,5 +1,5 @@
 import type { DetectedChemical, PhysicalState, Unit } from "@/types/lab-smalls";
-import { lookupPubChemFromText, lookupPubChemName } from "@/services/pubChem";
+import { lookupChemicalEverywhere, lookupPubChemFromText } from "@/services/pubChem";
 
 export type ChemicalVisionService = {
   analyzeChemicalImage(image: File | Blob, options?: { openAiApiKey?: string }): Promise<{ items: DetectedChemical[]; warnings: string[] }>;
@@ -164,7 +164,7 @@ async function analyzeWithOpenAIVision(image: File | Blob, apiKey?: string): Pro
     const extracted = parseVisionJson(outputText);
     if (!extracted?.chemicalName) return { items: [], warnings: ["OpenAI Vision OCR did not find a chemical name. Tesseract fallback was used."] };
 
-    const pubChem = await lookupPubChemName(extracted.chemicalName);
+    const pubChem = await lookupChemicalEverywhere(extracted.chemicalName);
     const name = pubChem?.name ?? cleanChemicalNameCandidate(extracted.chemicalName);
     const state = normalizeState(extracted.physicalState) ?? pubChem?.physicalState ?? "Unknown";
     const unit = normalizeUnit(extracted.unit);
@@ -173,7 +173,7 @@ async function analyzeWithOpenAIVision(image: File | Blob, apiKey?: string): Pro
     return {
       warnings: [
         "OpenAI Vision OCR used for label reading. Operator confirmation is still required.",
-        pubChem ? `Matched PubChem CID ${pubChem.cid}${pubChem.iupacName ? ` (${pubChem.iupacName})` : ""}.` : "PubChem match was not found for the extracted name.",
+        pubChem ? `Matched ${pubChem.source ?? "chemical database"}${pubChem.cid > 0 ? ` CID ${pubChem.cid}` : ""}${pubChem.iupacName ? ` (${pubChem.iupacName})` : ""}.` : "No external database match was found for the extracted name.",
       ],
       items: [
         detected({
@@ -183,8 +183,8 @@ async function analyzeWithOpenAIVision(image: File | Blob, apiKey?: string): Pro
           unit,
           state,
           confidence,
-          manufacturer: extracted.manufacturer ?? (pubChem ? "PubChem" : undefined),
-          catalogNumber: extracted.catalogNumber ?? (pubChem ? `PubChem CID ${pubChem.cid}` : null),
+          manufacturer: extracted.manufacturer ?? pubChem?.source,
+          catalogNumber: extracted.catalogNumber ?? (pubChem?.cid && pubChem.cid > 0 ? `PubChem CID ${pubChem.cid}` : null),
           cas: extracted.casNumber ?? pubChem?.casNumber ?? null,
           un: extracted.unNumber ?? null,
           source: "database",
@@ -376,8 +376,8 @@ async function parseLabelText(text: string): Promise<{ item: DetectedChemical | 
   const state = labProduct?.state ?? pubChem?.physicalState ?? reference?.state ?? inferStateFromWords(normalized);
   const cas = extractCas(normalized) ?? pubChem?.casNumber ?? reference?.cas ?? null;
   const un = extractUn(normalized) ?? reference?.un ?? null;
-  const manufacturer = labProduct?.manufacturer ?? inferManufacturer(normalized) ?? (pubChem ? "PubChem" : undefined);
-  const catalogNumber = extractCatalogNumber(normalized) ?? labProduct?.catalogNumbers[0] ?? (pubChem ? `PubChem CID ${pubChem.cid}` : null);
+  const manufacturer = labProduct?.manufacturer ?? inferManufacturer(normalized) ?? pubChem?.source;
+  const catalogNumber = extractCatalogNumber(normalized) ?? labProduct?.catalogNumbers[0] ?? (pubChem?.cid && pubChem.cid > 0 ? `PubChem CID ${pubChem.cid}` : null);
   const labelName = extractLikelyLabelName(text);
   const name = labProduct?.name ?? pubChem?.name ?? reference?.name ?? labelName;
   const confidence = scoreExtraction(Boolean(name), Boolean(size), Boolean(quantity), state !== "Unknown", Boolean(pubChem) || Boolean(labProduct));
@@ -388,9 +388,9 @@ async function parseLabelText(text: string): Promise<{ item: DetectedChemical | 
 
   return {
     warnings: [
-      !reference && !pubChem && !labProduct ? "Chemical/product name was not matched to the built-in catalogues or PubChem." : "",
+      !reference && !pubChem && !labProduct ? "Chemical/product name was not matched to the built-in catalogues or external databases." : "",
       labProduct ? `Matched lab product catalogue${catalogNumber ? ` (${catalogNumber})` : ""}.` : "",
-      pubChem ? `Matched PubChem CID ${pubChem.cid}${pubChem.iupacName ? ` (${pubChem.iupacName})` : ""}.` : "",
+      pubChem ? `Matched ${pubChem.source ?? "chemical database"}${pubChem.cid > 0 ? ` CID ${pubChem.cid}` : ""}${pubChem.iupacName ? ` (${pubChem.iupacName})` : ""}.` : "",
       !size ? "Container size was not found on the label." : "",
       state === "Unknown" ? "Physical state could not be inferred from label/catalogue." : "",
     ].filter(Boolean),

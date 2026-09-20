@@ -3,6 +3,7 @@ import type { PhysicalState } from "@/types/lab-smalls";
 export type PubChemMatch = {
   cid: number;
   name: string;
+  source?: string;
   iupacName?: string;
   molecularFormula?: string;
   molecularWeight?: string;
@@ -28,6 +29,25 @@ type SynonymResponse = {
     Information?: Array<{
       CID: number;
       Synonym?: string[];
+    }>;
+  };
+};
+
+type OpsinResponse = {
+  status?: string;
+  message?: string;
+  name?: string;
+  smiles?: string;
+  stdInChI?: string;
+  stdInChIKey?: string;
+};
+
+type WikidataResponse = {
+  results?: {
+    bindings?: Array<{
+      chemicalLabel?: { value?: string };
+      cas?: { value?: string };
+      pubchem?: { value?: string };
     }>;
   };
 };
@@ -71,10 +91,23 @@ const stopWords = new Set([
 export async function lookupPubChemFromText(rawText: string): Promise<PubChemMatch | null> {
   const candidates = buildNameCandidates(rawText);
   for (const candidate of candidates) {
-    const match = await lookupPubChemName(candidate);
+    const match = await lookupChemicalEverywhere(candidate);
     if (match) return match;
   }
   return null;
+}
+
+export async function lookupChemicalEverywhere(name: string): Promise<PubChemMatch | null> {
+  const pubChem = await lookupPubChemName(name);
+  if (pubChem) return pubChem;
+
+  const cactus = await lookupCactus(name);
+  if (cactus) return cactus;
+
+  const opsin = await lookupOpsin(name);
+  if (opsin) return opsin;
+
+  return lookupWikidata(name);
 }
 
 export async function lookupPubChemName(name: string): Promise<PubChemMatch | null> {
@@ -95,6 +128,34 @@ export async function lookupPubChemName(name: string): Promise<PubChemMatch | nu
     return {
       cid: property.CID,
       name: displayName,
+      source: "PubChem",
+      iupacName: property.IUPACName,
+      molecularFormula: property.MolecularFormula,
+      molecularWeight: property.MolecularWeight,
+      synonyms,
+      casNumber: findCas(synonyms),
+      physicalState: inferPhysicalState(`${displayName} ${synonyms.slice(0, 12).join(" ")}`),
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function lookupPubChemCid(cid: string): Promise<PubChemMatch | null> {
+  if (!/^\d+$/.test(cid.trim())) return null;
+  try {
+    const propertyUrl = `https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/cid/${encodeURIComponent(cid.trim())}/property/Title,IUPACName,MolecularFormula,MolecularWeight/JSON`;
+    const propertyData = await fetchJson<PropertyResponse>(propertyUrl);
+    const property = propertyData?.PropertyTable?.Properties?.[0];
+    if (!property?.CID) return null;
+
+    const synonymData = await fetchJson<SynonymResponse>(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/cid/${property.CID}/synonyms/JSON`);
+    const synonyms = synonymData?.InformationList?.Information?.[0]?.Synonym?.slice(0, 50) ?? [];
+    const displayName = property.Title || chooseDisplayName(cid, synonyms) || property.IUPACName || `PubChem CID ${property.CID}`;
+    return {
+      cid: property.CID,
+      name: displayName,
+      source: "PubChem",
       iupacName: property.IUPACName,
       molecularFormula: property.MolecularFormula,
       molecularWeight: property.MolecularWeight,
@@ -108,17 +169,102 @@ export async function lookupPubChemName(name: string): Promise<PubChemMatch | nu
 }
 
 export async function searchPubChem(query: string): Promise<PubChemMatch[]> {
-  const direct = await lookupPubChemName(query);
+  const direct = await lookupChemicalEverywhere(query);
   if (direct) return [direct];
 
   const candidates = buildNameCandidates(query);
   const results: PubChemMatch[] = [];
   for (const candidate of candidates) {
-    const match = await lookupPubChemName(candidate);
+    const match = await lookupChemicalEverywhere(candidate);
     if (match && !results.some((item) => item.cid === match.cid)) results.push(match);
     if (results.length >= 6) break;
   }
   return results;
+}
+
+async function lookupCactus(name: string): Promise<PubChemMatch | null> {
+  const encoded = encodeURIComponent(name.trim());
+  if (!encoded) return null;
+  try {
+    const [iupacName, casNumber] = await Promise.all([
+      fetchText(`https://cactus.nci.nih.gov/chemical/structure/${encoded}/iupac_name`),
+      fetchText(`https://cactus.nci.nih.gov/chemical/structure/${encoded}/cas`),
+    ]);
+    const resolvedName = cleanResolverText(iupacName) || name;
+    const pubChem = await lookupPubChemName(casNumber ?? resolvedName);
+    if (pubChem) return { ...pubChem, source: "NCI CACTUS + PubChem", casNumber: pubChem.casNumber ?? casNumber ?? undefined };
+    if (!iupacName && !casNumber) return null;
+    return {
+      cid: -stableSyntheticId(`cactus:${name}`),
+      name: titleCaseName(name),
+      source: "NCI CACTUS",
+      iupacName: resolvedName,
+      synonyms: [name, resolvedName].filter(Boolean),
+      casNumber: casNumber ?? undefined,
+      physicalState: inferPhysicalState(`${name} ${resolvedName}`),
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function lookupOpsin(name: string): Promise<PubChemMatch | null> {
+  const encoded = encodeURIComponent(name.trim());
+  if (!encoded) return null;
+  try {
+    const data = await fetchJson<OpsinResponse>(`https://www.ebi.ac.uk/opsin/${encoded}.json`);
+    if (!data || data.status === "FAILURE") return null;
+    const resolvedName = data.name || name;
+    const pubChem = await lookupPubChemName(data.stdInChIKey ?? data.stdInChI ?? data.smiles ?? resolvedName);
+    if (pubChem) return { ...pubChem, source: "OPSIN + PubChem" };
+    return {
+      cid: -stableSyntheticId(`opsin:${name}`),
+      name: titleCaseName(name),
+      source: "OPSIN",
+      iupacName: resolvedName,
+      synonyms: [name, data.smiles, data.stdInChIKey].filter(Boolean) as string[],
+      physicalState: inferPhysicalState(name),
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function lookupWikidata(name: string): Promise<PubChemMatch | null> {
+  const cleaned = name.replace(/"/g, "");
+  if (!cleaned.trim()) return null;
+  const query = `
+    SELECT ?chemical ?chemicalLabel ?cas ?pubchem WHERE {
+      ?chemical rdfs:label "${cleaned}"@en.
+      OPTIONAL { ?chemical wdt:P231 ?cas. }
+      OPTIONAL { ?chemical wdt:P662 ?pubchem. }
+      SERVICE wikibase:label { bd:serviceParam wikibase:language "en". }
+    } LIMIT 1
+  `;
+  try {
+    const url = `https://query.wikidata.org/sparql?format=json&query=${encodeURIComponent(query)}`;
+    const data = await fetchJson<WikidataResponse>(url);
+    const result = data?.results?.bindings?.[0];
+    if (!result) return null;
+    if (result.pubchem?.value) {
+      const pubChem = await lookupPubChemCid(result.pubchem.value);
+      if (pubChem) return { ...pubChem, source: "Wikidata + PubChem", casNumber: pubChem.casNumber ?? result.cas?.value };
+    }
+    if (result.cas?.value) {
+      const pubChem = await lookupPubChemName(result.cas.value);
+      if (pubChem) return { ...pubChem, source: "Wikidata + PubChem", casNumber: pubChem.casNumber ?? result.cas.value };
+    }
+    return {
+      cid: -stableSyntheticId(`wikidata:${name}`),
+      name: result.chemicalLabel?.value ?? titleCaseName(name),
+      source: "Wikidata",
+      synonyms: [name],
+      casNumber: result.cas?.value,
+      physicalState: inferPhysicalState(name),
+    };
+  } catch {
+    return null;
+  }
 }
 
 function buildNameCandidates(rawText: string) {
@@ -205,6 +351,25 @@ function chooseDisplayName(original: string, synonyms: string[]) {
   return simple ?? original;
 }
 
+function cleanResolverText(text: string | null) {
+  if (!text) return null;
+  const cleaned = text.replace(/\s+/g, " ").trim();
+  if (!cleaned || /not found|page not found|resolver error/i.test(cleaned)) return null;
+  return cleaned;
+}
+
+function titleCaseName(name: string) {
+  return name.toLowerCase().replace(/\b[a-z]/g, (letter) => letter.toUpperCase());
+}
+
+function stableSyntheticId(input: string) {
+  let hash = 0;
+  for (let index = 0; index < input.length; index += 1) {
+    hash = (hash * 31 + input.charCodeAt(index)) >>> 0;
+  }
+  return Math.max(1, hash);
+}
+
 function findCas(synonyms: string[]) {
   return synonyms.find((synonym) => /^\d{2,7}-\d{2}-\d$/.test(synonym));
 }
@@ -219,12 +384,24 @@ function inferPhysicalState(text: string): PhysicalState {
 
 async function fetchJson<T>(url: string): Promise<T | null> {
   const controller = new AbortController();
-  const timeout = window.setTimeout(() => controller.abort(), 4500);
+  const timeout = setTimeout(() => controller.abort(), 4500);
   try {
-    const response = await fetch(url, { signal: controller.signal });
+    const response = await fetch(url, { signal: controller.signal, headers: { Accept: "application/json" } });
     if (!response.ok) return null;
     return (await response.json()) as T;
   } finally {
-    window.clearTimeout(timeout);
+    clearTimeout(timeout);
+  }
+}
+
+async function fetchText(url: string): Promise<string | null> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 4500);
+  try {
+    const response = await fetch(url, { signal: controller.signal, headers: { Accept: "text/plain" } });
+    if (!response.ok) return null;
+    return cleanResolverText(await response.text());
+  } finally {
+    clearTimeout(timeout);
   }
 }
