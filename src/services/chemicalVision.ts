@@ -1,4 +1,5 @@
 import type { DetectedChemical, PhysicalState, Unit } from "@/types/lab-smalls";
+import { lookupPubChemFromText } from "@/services/pubChem";
 
 export type ChemicalVisionService = {
   analyzeChemicalImage(image: File | Blob): Promise<{ items: DetectedChemical[]; warnings: string[] }>;
@@ -78,7 +79,7 @@ export class MockChemicalVisionService implements ChemicalVisionService {
   async analyzeChemicalImage(image: File | Blob): Promise<{ items: DetectedChemical[]; warnings: string[] }> {
     await new Promise((resolve) => setTimeout(resolve, 350));
     const [profile, ocr] = await Promise.all([profileImage(image), readLabelText(image)]);
-    const parsed = parseLabelText(ocr.text);
+    const parsed = await parseLabelText(ocr.text);
 
     if (parsed.item) {
       return {
@@ -112,31 +113,34 @@ async function readLabelText(image: File | Blob): Promise<{ text: string; confid
   }
 }
 
-function parseLabelText(text: string): { item: DetectedChemical | null; warnings: string[] } {
+async function parseLabelText(text: string): Promise<{ item: DetectedChemical | null; warnings: string[] }> {
   const normalized = normalizeText(text);
   if (normalized.length < 8) return { item: null, warnings: ["No reliable label text was read. Try a closer, sharper photo of the label."] };
 
   const reference = findChemical(normalized);
+  const pubChem = reference ? null : await lookupPubChemFromText(text);
   const size = extractSize(normalized);
   const quantity = extractQuantity(normalized);
-  const state = reference?.state ?? inferStateFromWords(normalized);
-  const cas = extractCas(normalized) ?? reference?.cas ?? null;
+  const state = reference?.state ?? pubChem?.physicalState ?? inferStateFromWords(normalized);
+  const cas = extractCas(normalized) ?? reference?.cas ?? pubChem?.casNumber ?? null;
   const un = extractUn(normalized) ?? reference?.un ?? null;
   const manufacturer = inferManufacturer(normalized);
-  const confidence = scoreExtraction(Boolean(reference), Boolean(size), Boolean(quantity), state !== "Unknown");
+  const name = reference?.name ?? pubChem?.name ?? null;
+  const confidence = scoreExtraction(Boolean(name), Boolean(size), Boolean(quantity), state !== "Unknown", Boolean(pubChem));
 
-  if (!reference && !size) {
+  if (!name && !size) {
     return { item: null, warnings: [`OCR text read, but no known chemical name or size was confidently found: "${trimForWarning(text)}"`] };
   }
 
   return {
     warnings: [
-      !reference ? "Chemical name was not matched to the built-in chemical catalogue." : "",
+      !reference && !pubChem ? "Chemical name was not matched to the built-in chemical catalogue or PubChem." : "",
+      pubChem ? `Matched PubChem CID ${pubChem.cid}${pubChem.iupacName ? ` (${pubChem.iupacName})` : ""}.` : "",
       !size ? "Container size was not found on the label." : "",
       state === "Unknown" ? "Physical state could not be inferred from label/catalogue." : "",
     ].filter(Boolean),
     item: detected({
-      name: reference?.name ?? "UNKNOWN PRODUCT",
+      name: name ?? "UNKNOWN PRODUCT",
       quantity,
       size: size?.value ?? null,
       unit: size?.unit ?? null,
@@ -215,8 +219,8 @@ function inferManufacturer(text: string) {
   return undefined;
 }
 
-function scoreExtraction(hasName: boolean, hasSize: boolean, hasQuantity: boolean, hasState: boolean) {
-  return Math.min(0.94, 0.34 + (hasName ? 0.28 : 0) + (hasSize ? 0.2 : 0) + (hasQuantity ? 0.06 : 0) + (hasState ? 0.06 : 0));
+function scoreExtraction(hasName: boolean, hasSize: boolean, hasQuantity: boolean, hasState: boolean, hasPubChem: boolean) {
+  return Math.min(0.96, 0.34 + (hasName ? 0.24 : 0) + (hasPubChem ? 0.12 : 0) + (hasSize ? 0.18 : 0) + (hasQuantity ? 0.04 : 0) + (hasState ? 0.04 : 0));
 }
 
 function trimForWarning(text: string) {

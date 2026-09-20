@@ -120,6 +120,16 @@ analyzeChemicalImage(image): Promise<{ items: DetectedChemical[]; warnings: stri
 
 Replace `MockChemicalVisionService` with a real provider implementation when API credentials are available. Keep server-side validation before saving any detected item.
 
+## Chemical Database Lookup
+
+Client-side OCR is supported with `tesseract.js`. When OCR text is available, the app first checks the local common-lab-chemical catalogue, then queries PubChem PUG-REST for broader compound coverage.
+
+```text
+src/services/pubChem.ts
+```
+
+PubChem improves name, synonym, CID, CAS, formula, and physical-state inference, but the operator must still review every field before finalisation.
+
 ## Barcode-Ready Boundary
 
 Future barcode resolution is prepared in:
