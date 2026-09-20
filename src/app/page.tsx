@@ -1,69 +1,164 @@
-import Image from "next/image";
+"use client";
 
-export default function Home() {
+import { useMemo, useRef, useState } from "react";
+import { AlertTriangle, Archive, Camera, CheckCircle2, ClipboardCheck, Database, FileDown, History, Home, ImageUp, LogIn, Plus, Printer, Search, Settings, ShieldCheck, Wifi, WifiOff } from "lucide-react";
+import { chemicalVisionService } from "@/services/chemicalVision";
+import { demoAudit, demoDrums, demoProducts, field } from "@/lib/demo-data";
+import { completionBlockers, confidenceNeedsReview, mergeDuplicateItems, totalContainers } from "@/lib/inventory";
+import { downloadCsv, downloadPdf, downloadXlsx, openPrintView } from "@/lib/exporters";
+import type { Drum, InventoryItem, PhysicalState, Product, RetentionPolicy, Role, Unit } from "@/types/lab-smalls";
+
+type View = "Dashboard" | "New Drum" | "Active Drums" | "History" | "Product Database" | "Settings";
+const navItems: { label: View; icon: typeof Home }[] = [
+  { label: "Dashboard", icon: Home }, { label: "New Drum", icon: Plus }, { label: "Active Drums", icon: Archive },
+  { label: "History", icon: History }, { label: "Product Database", icon: Database }, { label: "Settings", icon: Settings },
+];
+const units: Unit[] = ["g", "kg", "mL", "L"];
+const states: PhysicalState[] = ["Solid", "Liquid", "Gas", "Unknown"];
+
+export default function HomePage() {
+  const [view, setView] = useState<View>("Dashboard");
+  const [role, setRole] = useState<Role>("Chemist");
+  const [drums, setDrums] = useState<Drum[]>(demoDrums);
+  const [selectedDrumId, setSelectedDrumId] = useState(demoDrums[0].id);
+  const [products, setProducts] = useState<Product[]>(demoProducts);
+  const [retention, setRetention] = useState<RetentionPolicy>("Keep until drum completion");
+  const [online, setOnline] = useState(true);
+  const selectedDrum = drums.find((drum) => drum.id === selectedDrumId) ?? drums[0];
+  const activeDrums = drums.filter((drum) => drum.status !== "Completed");
+  const completedDrums = drums.filter((drum) => drum.status === "Completed");
+  const updateDrum = (updated: Drum) => { setDrums((current) => current.map((drum) => drum.id === updated.id ? updated : drum)); setSelectedDrumId(updated.id); };
+
+  function createDrum(form: Omit<Drum, "id" | "status" | "imagesScanned" | "items">) {
+    const drum: Drum = { ...form, id: crypto.randomUUID(), status: "Active", imagesScanned: 0, items: [] };
+    setDrums((current) => [drum, ...current]);
+    setSelectedDrumId(drum.id);
+    setView("Active Drums");
+  }
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert h-5 w-[100px]"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the{" "}
-            <code className="rounded bg-black/[.06] px-1.5 py-0.5 font-mono text-[0.9em] dark:bg-white/[.08]">
-              page.tsx
-            </code>{" "}
-            file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
+    <main className="min-h-screen bg-slate-100 text-slate-950">
+      <header className="sticky top-0 z-30 border-b border-slate-200 bg-white/95 backdrop-blur">
+        <div className="mx-auto flex max-w-7xl items-center gap-3 px-4 py-3">
+          <div className="flex h-11 w-11 items-center justify-center rounded-lg bg-emerald-700 text-white"><ClipboardCheck size={24} /></div>
+          <div className="min-w-0 flex-1"><h1 className="truncate text-xl font-bold tracking-tight">Lab Smalls Scanner</h1><p className="text-sm text-slate-600">AI-assisted extraction. Operator verification required.</p></div>
+          <button onClick={() => setOnline((value) => !value)} className="touch-button hidden border border-slate-300 bg-white text-sm font-semibold sm:flex">{online ? <Wifi size={18} /> : <WifiOff size={18} />}{online ? "ONLINE" : "OFFLINE"}</button>
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert h-[14px] w-4"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={14}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
-      </main>
-    </div>
+      </header>
+      <div className="mx-auto grid max-w-7xl gap-4 px-4 py-4 lg:grid-cols-[260px_1fr]">
+        <aside className="hidden rounded-lg border border-slate-200 bg-white p-3 lg:block">
+          <DemoLogin role={role} setRole={setRole} />
+          <nav className="mt-4 space-y-2">{navItems.map((item) => <NavButton key={item.label} item={item} active={view === item.label} onClick={() => setView(item.label)} />)}</nav>
+        </aside>
+        <section className="space-y-4 pb-28 lg:pb-4">
+          <OfflineStatus online={online} pending={!online && activeDrums.length > 0} />
+          {view === "Dashboard" && <Dashboard drums={drums} onOpen={(id) => { setSelectedDrumId(id); setView("Active Drums"); }} />}
+          {view === "New Drum" && <DrumForm nextNumber={drums.length + 1} operator="Demo Chemist" onCreate={createDrum} />}
+          {view === "Active Drums" && <ActiveDrums drums={activeDrums} selected={selectedDrum} onSelect={setSelectedDrumId} onUpdate={updateDrum} products={products} saveProduct={(product) => setProducts((current) => [product, ...current])} />}
+          {view === "History" && <HistoryView drums={completedDrums.length ? completedDrums : drums} onOpen={(id) => { setSelectedDrumId(id); setView("Active Drums"); }} />}
+          {view === "Product Database" && <ProductDatabase products={products} />}
+          {view === "Settings" && <SettingsView retention={retention} setRetention={setRetention} role={role} />}
+        </section>
+      </div>
+      <nav className="fixed inset-x-0 bottom-0 z-40 grid grid-cols-5 border-t border-slate-200 bg-white lg:hidden">
+        {navItems.slice(1).map((item) => <button key={item.label} onClick={() => setView(item.label)} className={`flex min-h-16 flex-col items-center justify-center gap-1 text-xs font-semibold ${view === item.label ? "text-emerald-700" : "text-slate-600"}`}><item.icon size={22} /><span>{item.label.replace("Product Database", "Products").replace("Active Drums", "Active")}</span></button>)}
+      </nav>
+    </main>
   );
+}
+
+function DemoLogin({ role, setRole }: { role: Role; setRole: (role: Role) => void }) {
+  return <div className="rounded-lg border border-slate-200 bg-slate-50 p-3"><div className="flex items-center gap-2 font-semibold"><LogIn size={18} /> Demo login</div><select value={role} onChange={(e) => setRole(e.target.value as Role)} className="mt-3 input"><option>Chemist</option><option>Supervisor</option><option>Admin</option></select></div>;
+}
+function NavButton({ item, active, onClick }: { item: { label: View; icon: typeof Home }; active: boolean; onClick: () => void }) {
+  return <button onClick={onClick} className={`touch-button w-full justify-start ${active ? "bg-emerald-700 text-white" : "bg-white text-slate-700 hover:bg-slate-50"}`}><item.icon size={20} />{item.label}</button>;
+}
+function OfflineStatus({ online, pending }: { online: boolean; pending: boolean }) {
+  return <div className={`flex items-center gap-2 rounded-lg border px-4 py-3 text-sm font-semibold ${online ? "border-emerald-200 bg-emerald-50 text-emerald-800" : "border-amber-200 bg-amber-50 text-amber-900"}`}>{online ? <Wifi size={18} /> : <WifiOff size={18} />}{online ? "ONLINE" : pending ? "OFFLINE - SYNC PENDING" : "OFFLINE"}</div>;
+}
+function Panel({ title, children }: { title: string; children: React.ReactNode }) {
+  return <section className="rounded-lg border border-slate-200 bg-white p-4"><h2 className="mb-3 text-lg font-bold">{title}</h2>{children}</section>;
+}
+function Metric({ label, value, urgent = false }: { label: string; value: number; urgent?: boolean }) {
+  return <div className={`rounded-lg border bg-white p-4 ${urgent ? "border-amber-300" : "border-slate-200"}`}><div className="text-3xl font-bold">{value}</div><div className="text-sm font-semibold text-slate-600">{label}</div></div>;
+}
+function MetricMini({ label, value }: { label: string; value: number }) {
+  return <div className="rounded-lg border border-slate-200 bg-white p-3 text-center"><div className="text-2xl font-bold">{value}</div><div className="text-sm font-semibold text-slate-600">{label}</div></div>;
+}
+function Dashboard({ drums, onOpen }: { drums: Drum[]; onOpen: (id: string) => void }) {
+  const reviewCount = drums.flatMap((drum) => drum.items).filter((item) => item.status !== "Confirmed").length;
+  return <div className="space-y-4"><div className="grid gap-3 sm:grid-cols-4"><Metric label="Active drums" value={drums.filter((d) => d.status === "Active").length} /><Metric label="Completed today" value={drums.filter((d) => d.status === "Completed" && d.date === "2026-09-20").length} /><Metric label="Items requiring review" value={reviewCount} urgent={reviewCount > 0} /><Metric label="Recently completed" value={drums.filter((d) => d.status === "Completed").length} /></div><Panel title="Recently touched drums"><div className="space-y-3">{drums.map((drum) => <DrumListButton key={drum.id} drum={drum} onClick={() => onOpen(drum.id)} />)}</div></Panel></div>;
+}
+function Label({ text, children }: { text: string; children: React.ReactNode }) {
+  return <label className="grid gap-2 text-sm font-bold text-slate-700"><span>{text}</span>{children}</label>;
+}
+function DrumForm({ nextNumber, operator, onCreate }: { nextNumber: number; operator: string; onCreate: (drum: Omit<Drum, "id" | "status" | "imagesScanned" | "items">) => void }) {
+  const [drumId, setDrumId] = useState(`LS-2026-${String(nextNumber).padStart(3, "0")}`);
+  const [size, setSize] = useState<Drum["size"]>("205 L");
+  const [operatorName, setOperatorName] = useState(operator);
+  const [date, setDate] = useState("2026-09-20");
+  const [notes, setNotes] = useState("");
+  return <Panel title="New Drum"><form className="grid gap-4" onSubmit={(e) => { e.preventDefault(); onCreate({ drumId, size, category: "Lab Smalls", operatorName, date, notes }); }}><Label text="Drum ID"><input className="input" value={drumId} onChange={(e) => setDrumId(e.target.value)} /></Label><Label text="Drum size"><select className="input" value={size} onChange={(e) => setSize(e.target.value as Drum["size"])}><option>30 L</option><option>60 L</option><option>205 L</option><option>Other</option></select></Label><Label text="Waste/category"><input className="input" value="Lab Smalls" readOnly /></Label><Label text="Operator name"><input className="input" value={operatorName} onChange={(e) => setOperatorName(e.target.value)} /></Label><Label text="Date"><input className="input" type="date" value={date} onChange={(e) => setDate(e.target.value)} /></Label><Label text="Optional notes"><textarea className="input min-h-28" value={notes} onChange={(e) => setNotes(e.target.value)} /></Label><button className="touch-button min-h-14 justify-center bg-emerald-700 text-white" type="submit"><Camera size={22} />START SCANNING</button></form></Panel>;
+}
+function DrumListButton({ drum, onClick }: { drum: Drum; onClick: () => void }) {
+  const blockers = completionBlockers(drum).length;
+  return <button onClick={onClick} className="w-full rounded-lg border border-slate-200 bg-white p-4 text-left shadow-sm"><div className="flex items-center justify-between gap-3"><strong>{drum.drumId}</strong><ReviewBadge status={drum.status === "Completed" ? "Completed" : blockers ? "Review Required" : "Active"} /></div><div className="mt-1 text-sm text-slate-600">{totalContainers(drum)} containers · {drum.operatorName}</div></button>;
+}
+function ActiveDrums({ drums, selected, onSelect, onUpdate, products, saveProduct }: { drums: Drum[]; selected: Drum; onSelect: (id: string) => void; onUpdate: (drum: Drum) => void; products: Product[]; saveProduct: (product: Product) => void }) {
+  return <div className="grid gap-4 xl:grid-cols-[300px_1fr]"><Panel title="Active Drums"><div className="space-y-3">{drums.map((drum) => <DrumListButton key={drum.id} drum={drum} onClick={() => onSelect(drum.id)} />)}</div></Panel><div className="space-y-4"><CameraScanner drum={selected} onUpdate={onUpdate} /><ReviewSection drum={selected} onUpdate={onUpdate} products={products} saveProduct={saveProduct} /><DrumSummary drum={selected} onUpdate={onUpdate} /></div></div>;
+}
+function CameraScanner({ drum, onUpdate }: { drum: Drum; onUpdate: (drum: Drum) => void }) {
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [processing, setProcessing] = useState(false);
+  async function processImage(file?: File) {
+    setProcessing(true);
+    const result = await chemicalVisionService.analyzeChemicalImage(file ?? new Blob());
+    const additions: InventoryItem[] = result.items.map((item) => ({ ...item, id: crypto.randomUUID(), status: item.chemicalName.value === "UNKNOWN PRODUCT" ? "Unknown" : "Review Required" }));
+    onUpdate({ ...drum, imagesScanned: drum.imagesScanned + 1, items: mergeDuplicateItems([...drum.items, ...additions]) });
+    setProcessing(false);
+  }
+  return <Panel title={`DRUM ${drum.drumId}`}><div className="flex min-h-56 items-center justify-center rounded-lg border-2 border-dashed border-slate-300 bg-slate-50 text-center"><div><Camera className="mx-auto mb-3 text-slate-500" size={44} /><p className="font-semibold">Camera area</p><p className="text-sm text-slate-600">Take photos or upload label images.</p></div></div><div className="mt-4 grid grid-cols-3 gap-2"><MetricMini label="Images" value={drum.imagesScanned} /><MetricMini label="Detected" value={drum.items.length} /><MetricMini label="Review" value={completionBlockers(drum).length} /></div><input ref={fileRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={(e) => void processImage(e.target.files?.[0])} /><div className="mt-4 grid gap-3 sm:grid-cols-4"><button disabled={processing} onClick={() => fileRef.current?.click()} className="touch-button justify-center bg-slate-900 text-white"><Camera size={20} />TAKE PHOTO</button><button disabled={processing} onClick={() => fileRef.current?.click()} className="touch-button justify-center border border-slate-300 bg-white"><ImageUp size={20} />UPLOAD IMAGE</button><a href="#review" className="touch-button justify-center border border-slate-300 bg-white"><AlertTriangle size={20} />REVIEW ITEMS</a><a href="#summary" className="touch-button justify-center bg-emerald-700 text-white"><CheckCircle2 size={20} />FINISH SCANNING</a></div>{processing && <p className="mt-3 text-sm font-semibold text-amber-800">Processing image with mock AI extraction...</p>}</Panel>;
+}
+function ReviewSection({ drum, onUpdate, products, saveProduct }: { drum: Drum; onUpdate: (drum: Drum) => void; products: Product[]; saveProduct: (product: Product) => void }) {
+  const updateItem = (item: InventoryItem) => onUpdate({ ...drum, items: drum.items.map((current) => current.id === item.id ? item : current) });
+  const addManual = () => onUpdate({ ...drum, items: [{ id: crypto.randomUUID(), chemicalName: field("", 1, "user"), quantity: field(1, 1, "user"), containerSize: field(1, 1, "user"), unit: field("L", 1, "user"), physicalState: field("Unknown", 1, "user"), confidence: 1, status: "Review Required" }, ...drum.items] });
+  return <Panel title="Review Items"><div id="review" className="mb-3 flex flex-wrap gap-3"><button onClick={addManual} className="touch-button bg-slate-900 text-white"><Plus size={20} />ADD MANUALLY</button><button onClick={() => onUpdate({ ...drum, items: mergeDuplicateItems(drum.items) })} className="touch-button border border-slate-300 bg-white">Combine duplicates</button></div><div className="grid gap-3">{drum.items.map((item) => <ScanResultCard key={item.id} item={item} onUpdate={updateItem} products={products} saveProduct={saveProduct} />)}</div></Panel>;
+}
+function ScanResultCard({ item, onUpdate, products, saveProduct }: { item: InventoryItem; onUpdate: (item: InventoryItem) => void; products: Product[]; saveProduct: (product: Product) => void }) {
+  const needsReview = item.status !== "Confirmed" || item.chemicalName.value === "UNKNOWN PRODUCT" || item.physicalState.value === "Unknown" || confidenceNeedsReview(item.confidence);
+  function updateField(name: "chemicalName" | "quantity" | "containerSize" | "unit" | "physicalState", value: string) {
+    const numeric = name === "quantity" || name === "containerSize" ? Number(value) : value;
+    onUpdate({ ...item, [name]: { ...item[name], value: numeric as never, confidence: 1, source: "user" } });
+  }
+  return <article className={`rounded-lg border p-4 ${needsReview ? "border-amber-300 bg-amber-50" : "border-slate-200 bg-white"}`}><div className="mb-3 flex items-start justify-between gap-3"><div><h3 className="text-lg font-bold">{item.chemicalName.value || "Manual item"}</h3><ConfidenceIndicator confidence={item.confidence} /></div><ReviewBadge status={item.status} /></div>{needsReview && <div className="mb-3 flex items-center gap-2 rounded-lg border border-amber-300 bg-white px-3 py-2 text-sm font-semibold text-amber-900"><AlertTriangle size={18} />Review required: confirm uncertain or missing fields.</div>}<div className="grid gap-3 sm:grid-cols-2"><FieldEditor label="Chemical Name" value={item.chemicalName.value ?? ""} confidence={item.chemicalName.confidence} source={item.chemicalName.source} onChange={(v) => updateField("chemicalName", v)} /><FieldEditor label="Quantity" type="number" value={item.quantity.value ?? ""} confidence={item.quantity.confidence} source={item.quantity.source} onChange={(v) => updateField("quantity", v)} /><FieldEditor label="Container Size" type="number" value={item.containerSize.value ?? ""} confidence={item.containerSize.confidence} source={item.containerSize.source} onChange={(v) => updateField("containerSize", v)} /><Label text={`Unit · source: ${item.unit.source}`}><select className={`input ${confidenceNeedsReview(item.unit.confidence) ? "review-field" : ""}`} value={item.unit.value ?? ""} onChange={(e) => updateField("unit", e.target.value)}>{units.map((unit) => <option key={unit}>{unit}</option>)}</select></Label><Label text={`Physical State · source: ${item.physicalState.source}`}><select className={`input ${item.physicalState.value === "Unknown" || confidenceNeedsReview(item.physicalState.confidence) ? "review-field" : ""}`} value={item.physicalState.value ?? "Unknown"} onChange={(e) => updateField("physicalState", e.target.value)}>{states.map((state) => <option key={state}>{state}</option>)}</select></Label><FieldEditor label="Manufacturer" value={item.manufacturer ?? ""} confidence={1} source="label" onChange={(v) => onUpdate({ ...item, manufacturer: v })} /><FieldEditor label="CAS" value={item.casNumber ?? ""} confidence={1} source="label" onChange={(v) => onUpdate({ ...item, casNumber: v })} /><FieldEditor label="UN Number" value={item.unNumber ?? ""} confidence={1} source="label" onChange={(v) => onUpdate({ ...item, unNumber: v })} /></div><div className="mt-4 grid gap-3 sm:grid-cols-3"><button onClick={() => onUpdate({ ...item, status: "Confirmed", confidence: 1 })} className="touch-button justify-center bg-emerald-700 text-white"><CheckCircle2 size={20} />CONFIRM</button><button onClick={() => onUpdate({ ...item, status: "Review Required" })} className="touch-button justify-center border border-amber-300 bg-white text-amber-900"><AlertTriangle size={20} />FLAG FOR REVIEW</button><button onClick={() => saveProduct({ id: crypto.randomUUID(), canonicalName: item.chemicalName.value ?? "Unnamed product", manufacturer: item.manufacturer, catalogNumber: item.catalogNumber ?? undefined, casNumber: item.casNumber ?? undefined, unNumber: item.unNumber ?? undefined, typicalContainerSize: item.containerSize.value ?? undefined, unit: item.unit.value ?? undefined, physicalState: item.physicalState.value ?? "Unknown" })} className="touch-button justify-center border border-slate-300 bg-white"><Database size={20} />Save product</button></div>{products.find((p) => p.manufacturer === item.manufacturer && p.catalogNumber === item.catalogNumber) && <p className="mt-3 text-sm font-semibold text-emerald-800">Matched product database. Confirm before applying known values.</p>}</article>;
+}
+function ConfidenceIndicator({ confidence }: { confidence: number }) {
+  const percent = Math.round(confidence * 100);
+  return <p className={`text-sm font-semibold ${percent < 85 ? "text-amber-900" : "text-slate-600"}`}>Confidence {percent}%{percent < 85 ? " · Review required" : ""}</p>;
+}
+function FieldEditor({ label, value, onChange, confidence, source, type = "text" }: { label: string; value: string | number; onChange: (value: string) => void; confidence: number; source: string; type?: string }) {
+  return <Label text={`${label} · source: ${source}`}><input className={`input ${confidenceNeedsReview(confidence) ? "review-field" : ""}`} type={type} value={value} onChange={(e) => onChange(e.target.value)} /></Label>;
+}
+function ReviewBadge({ status }: { status: string }) {
+  const style = status === "Confirmed" || status === "Completed" ? "bg-emerald-100 text-emerald-800" : status === "Unknown" || status === "Review Required" ? "bg-amber-100 text-amber-900" : "bg-slate-100 text-slate-700";
+  return <span className={`inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-bold ${style}`}>{status === "Confirmed" || status === "Completed" ? <CheckCircle2 size={14} /> : <AlertTriangle size={14} />}{status}</span>;
+}
+function DrumSummary({ drum, onUpdate }: { drum: Drum; onUpdate: (drum: Drum) => void }) {
+  const blockers = completionBlockers(drum);
+  const [checked, setChecked] = useState(false);
+  return <Panel title="Drum Summary"><div id="summary" className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4"><MetricMini label="Unique lines" value={drum.items.length} /><MetricMini label="Containers" value={totalContainers(drum)} /><MetricMini label="Review blockers" value={blockers.length} /><MetricMini label="Images" value={drum.imagesScanned} /></div><div className="mt-4 overflow-x-auto"><table className="min-w-full text-left text-sm"><thead><tr className="border-b">{["Chemical", "Quantity", "Size", "State", "CAS", "UN", "Status"].map((h) => <th key={h} className="px-3 py-2">{h}</th>)}</tr></thead><tbody>{drum.items.map((item) => <tr key={item.id} className="border-b"><td className="px-3 py-3 font-semibold">{item.chemicalName.value}</td><td className="px-3 py-3">{item.quantity.value}</td><td className="px-3 py-3">{item.containerSize.value} {item.unit.value}</td><td className="px-3 py-3">{item.physicalState.value}</td><td className="px-3 py-3">{item.casNumber}</td><td className="px-3 py-3">{item.unNumber}</td><td className="px-3 py-3"><ReviewBadge status={item.status} /></td></tr>)}</tbody></table></div>{blockers.length > 0 && <div className="mt-4 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm font-semibold text-amber-900">Completion blocked by {blockers.length} item(s): unknown products, unknown physical state, missing required fields, or review status.</div>}<ExportMenu drum={drum} /><label className="mt-4 flex items-center gap-3 font-semibold"><input type="checkbox" className="h-6 w-6" checked={checked} onChange={(e) => setChecked(e.target.checked)} />I have reviewed this inventory.</label><button disabled={blockers.length > 0 || !checked} onClick={() => onUpdate({ ...drum, status: "Completed", finalisedAt: new Date().toISOString() })} className="touch-button mt-3 min-h-14 justify-center bg-emerald-700 text-white disabled:bg-slate-300"><ShieldCheck size={22} />FINALISE DRUM</button></Panel>;
+}
+function ExportMenu({ drum }: { drum: Drum }) {
+  return <div className="mt-4 grid gap-3 sm:grid-cols-4"><button className="touch-button border border-slate-300 bg-white" onClick={() => downloadPdf(drum)}><FileDown size={18} />PDF</button><button className="touch-button border border-slate-300 bg-white" onClick={() => downloadCsv(drum)}><FileDown size={18} />CSV</button><button className="touch-button border border-slate-300 bg-white" onClick={() => downloadXlsx(drum)}><FileDown size={18} />XLSX</button><button className="touch-button border border-slate-300 bg-white" onClick={openPrintView}><Printer size={18} />Print</button></div>;
+}
+function HistoryView({ drums, onOpen }: { drums: Drum[]; onOpen: (id: string) => void }) {
+  const [query, setQuery] = useState("");
+  const results = useMemo(() => drums.filter((drum) => [drum.drumId, drum.operatorName, drum.date, ...drum.items.flatMap((item) => [item.chemicalName.value, item.casNumber, item.unNumber])].join(" ").toLowerCase().includes(query.toLowerCase())), [drums, query]);
+  return <Panel title="Searchable History"><div className="relative mb-4"><Search className="absolute left-3 top-4 text-slate-500" size={20} /><input className="input pl-11" placeholder="Search drum ID, chemical, date, operator, CAS, UN" value={query} onChange={(e) => setQuery(e.target.value)} /></div><div className="space-y-3">{results.map((drum) => <DrumListButton key={drum.id} drum={drum} onClick={() => onOpen(drum.id)} />)}</div></Panel>;
+}
+function ProductDatabase({ products }: { products: Product[] }) {
+  return <Panel title="Product Database"><div className="space-y-3">{products.map((product) => <div key={product.id} className="rounded-lg border border-slate-200 p-4"><strong>{product.canonicalName}</strong><p className="text-sm text-slate-600">{product.manufacturer} · {product.catalogNumber ?? "No catalog"} · {product.typicalContainerSize} {product.unit} · {product.physicalState}</p><p className="text-sm text-slate-600">CAS {product.casNumber} · UN {product.unNumber}</p></div>)}</div></Panel>;
+}
+function SettingsView({ retention, setRetention, role }: { retention: RetentionPolicy; setRetention: (value: RetentionPolicy) => void; role: Role }) {
+  return <Panel title="Settings"><div className="grid gap-4"><Label text="Image retention"><select className="input" value={retention} onChange={(e) => setRetention(e.target.value as RetentionPolicy)}><option>Delete after processing</option><option>Keep until drum completion</option><option>Keep permanently</option></select></Label><p className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">Current policy: {retention}. This is shown to operators so image handling is explicit.</p><div className="rounded-lg border border-slate-200 p-3"><strong>Role permissions</strong><p className="text-sm text-slate-600">{role}: {role === "Chemist" ? "Create, scan, edit active drums, complete drums, view history." : role === "Supervisor" ? "Chemist permissions plus review all drums." : "Full access including users, products, and settings."}</p></div><Panel title="Audit trail sample"><div className="space-y-2 text-sm">{demoAudit.map((event) => <p key={event.id}><strong>{event.action}</strong> · {event.drumId} · {event.user} · {new Date(event.timestamp).toLocaleString()}</p>)}</div></Panel></div></Panel>;
 }

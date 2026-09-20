@@ -1,36 +1,180 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Lab Smalls Scanner
 
-## Getting Started
+Mobile-first hazardous-waste lab smalls inventory app for site chemists. The MVP enforces:
 
-First, run the development server:
+AI extraction -> human review -> confirmation -> final record
+
+AI-detected data is never treated as verified until an operator confirms it.
+
+## Stack
+
+- Next.js App Router
+- TypeScript
+- React
+- Tailwind CSS
+- PostgreSQL-ready Prisma schema
+- PWA manifest
+- Mock AI image extraction service
+
+## Quick Start
 
 ```bash
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open `http://localhost:3000`.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+This workspace was bootstrapped with pnpm because npm/npx was not available in the local Codex runtime, but the project scripts are standard npm scripts.
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Static HTML / GitHub Pages
 
-## Learn More
+This project is configured for static export. Build the HTML/CSS/JS files with:
 
-To learn more about Next.js, take a look at the following resources:
+```bash
+npm run export
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+The generated static site is written to:
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+```text
+out/
+```
 
-## Deploy on Vercel
+You can publish `out/` to any static host, including GitHub Pages. A GitHub Actions workflow is included at:
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+```text
+.github/workflows/deploy-pages.yml
+```
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+To use it:
+
+1. Push this project to a GitHub repository.
+2. In GitHub, open Settings -> Pages.
+3. Set Source to GitHub Actions.
+4. Push to the `main` branch.
+
+The app runs as a browser-only static web app in this mode. Demo data, mock AI extraction, exports, and review flows work without a backend.
+
+## Environment
+
+Copy `.env.example` to `.env` and update values:
+
+```bash
+cp .env.example .env
+```
+
+Required for real database work:
+
+```env
+DATABASE_URL="postgresql://postgres:postgres@localhost:5432/lab_smalls_scanner?schema=public"
+AI_PROVIDER="mock"
+OPENAI_API_KEY=""
+IMAGE_RETENTION_POLICY="until_completion"
+```
+
+## Database
+
+The Prisma schema lives in `prisma/schema.prisma` and models:
+
+- User
+- Drum
+- InventoryItem
+- Product
+- Scan
+- Image
+- AuditLog
+
+After configuring PostgreSQL:
+
+```bash
+npx prisma migrate dev
+npx prisma generate
+```
+
+The current UI uses typed demo data from `src/lib/demo-data.ts` so it runs immediately without a database.
+
+## Demo Flow
+
+1. Open the dashboard.
+2. Use New Drum to create a drum like `LS-2026-003`.
+3. Use Active Drums to upload or capture an image.
+4. Mock AI extraction creates editable review cards.
+5. Confirm every item or add missing manual data.
+6. Unknown products, unknown physical state, missing fields, or review status block finalisation.
+7. Export PDF, CSV, XLSX, or print view from the drum summary.
+
+## AI Provider Boundary
+
+Image recognition is isolated in:
+
+```text
+src/services/chemicalVision.ts
+```
+
+The app depends on this interface:
+
+```ts
+analyzeChemicalImage(image): Promise<{ items: DetectedChemical[]; warnings: string[] }>
+```
+
+Replace `MockChemicalVisionService` with a real provider implementation when API credentials are available. Keep server-side validation before saving any detected item.
+
+## Barcode-Ready Boundary
+
+Future barcode resolution is prepared in:
+
+```text
+src/services/barcode.ts
+```
+
+The resolver maps:
+
+```text
+barcode -> product database -> chemical name, container size, state, CAS, UN number
+```
+
+Barcode scanning is intentionally not required for the MVP.
+
+## Future API Routes
+
+Static GitHub Pages cannot run Next.js API routes. The backend contract is documented in:
+
+```text
+docs/api-contracts.md
+```
+
+Future server endpoints should cover:
+
+- `POST /api/drums`
+- `PATCH /api/drums`
+- `POST /api/scans/process`
+- `POST /api/items`
+- `PATCH /api/items`
+- `DELETE /api/items`
+- `POST /api/drums/finalise`
+- `GET /api/history?q=acetone`
+- `GET /api/products?q=acetone`
+- `POST /api/products`
+- `POST /api/exports`
+
+For now, the app is intentionally client-side and static-exportable.
+
+## Verification
+
+Run:
+
+```bash
+npm run lint
+npm run build
+```
+
+Both passed in this workspace using the bundled pnpm runtime.
+
+## Notes
+
+- Units are not converted automatically.
+- Confidence below 85% is marked with text and icon cues, not colour alone.
+- Physical state must be label-backed, database-backed, or manually confirmed.
+- Completion requires the final operator checkbox.
+- Image retention is visible under Settings and defaults to "Keep until drum completion".

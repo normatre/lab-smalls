@@ -1,0 +1,143 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  CHEMIST
+  SUPERVISOR
+  ADMIN
+}
+
+enum DrumStatus {
+  ACTIVE
+  COMPLETED
+  BLOCKED
+}
+
+enum PhysicalState {
+  SOLID
+  LIQUID
+  GAS
+  UNKNOWN
+}
+
+enum FieldSource {
+  LABEL
+  DATABASE
+  USER
+  INFERRED
+  IMAGE
+}
+
+model User {
+  id        String   @id @default(cuid())
+  name      String
+  email     String   @unique
+  role      Role     @default(CHEMIST)
+  drums     Drum[]
+  auditLogs AuditLog[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Drum {
+  id              String          @id @default(cuid())
+  drumId          String          @unique
+  size            String
+  category        String          @default("Lab Smalls")
+  operatorName    String
+  date            DateTime
+  notes           String?
+  status          DrumStatus      @default(ACTIVE)
+  finalisedAt     DateTime?
+  finalisedBy     String?
+  userId          String
+  user            User            @relation(fields: [userId], references: [id])
+  inventoryItems  InventoryItem[]
+  scans           Scan[]
+  auditLogs       AuditLog[]
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+}
+
+model InventoryItem {
+  id             String        @id @default(cuid())
+  drumId         String
+  drum           Drum          @relation(fields: [drumId], references: [id], onDelete: Cascade)
+  productId      String?
+  product        Product?      @relation(fields: [productId], references: [id])
+  scanId         String?
+  scan           Scan?         @relation(fields: [scanId], references: [id])
+  chemicalName   Json
+  quantity       Json
+  containerSize  Json
+  unit           Json
+  physicalState  Json
+  manufacturer   String?
+  catalogNumber  String?
+  casNumber      String?
+  unNumber       String?
+  confidence     Float         @default(0)
+  status         String        @default("Review Required")
+  sourceImage    String?
+  notes          String?
+  confirmedAt    DateTime?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+}
+
+model Product {
+  id                   String          @id @default(cuid())
+  canonicalName        String
+  manufacturer         String?
+  catalogNumber        String?
+  barcode              String?
+  casNumber            String?
+  unNumber             String?
+  typicalContainerSize Float?
+  unit                 String?
+  physicalState        PhysicalState   @default(UNKNOWN)
+  items                InventoryItem[]
+  createdAt            DateTime        @default(now())
+  updatedAt            DateTime        @updatedAt
+
+  @@index([manufacturer, catalogNumber])
+  @@index([barcode])
+}
+
+model Scan {
+  id        String          @id @default(cuid())
+  drumId    String
+  drum      Drum            @relation(fields: [drumId], references: [id], onDelete: Cascade)
+  imageUrl  String?
+  status    String          @default("Processed")
+  items     InventoryItem[]
+  createdAt DateTime        @default(now())
+}
+
+model Image {
+  id        String   @id @default(cuid())
+  scanId    String?
+  path      String
+  retained  Boolean  @default(true)
+  createdAt DateTime @default(now())
+}
+
+model AuditLog {
+  id            String   @id @default(cuid())
+  drumId        String?
+  drum          Drum?    @relation(fields: [drumId], references: [id])
+  userId        String?
+  user          User?    @relation(fields: [userId], references: [id])
+  action        String
+  entityType    String?
+  entityId      String?
+  previousValue Json?
+  newValue      Json?
+  createdAt     DateTime @default(now())
+}
