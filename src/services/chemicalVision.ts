@@ -1,8 +1,8 @@
 import type { DetectedChemical, PhysicalState, Unit } from "@/types/lab-smalls";
-import { lookupPubChemFromText } from "@/services/pubChem";
+import { lookupPubChemFromText, lookupPubChemName } from "@/services/pubChem";
 
 export type ChemicalVisionService = {
-  analyzeChemicalImage(image: File | Blob): Promise<{ items: DetectedChemical[]; warnings: string[] }>;
+  analyzeChemicalImage(image: File | Blob, options?: { openAiApiKey?: string }): Promise<{ items: DetectedChemical[]; warnings: string[] }>;
 };
 
 type FieldSource = "label" | "database" | "image" | "inferred";
@@ -118,8 +118,12 @@ const detected = ({
 });
 
 export class MockChemicalVisionService implements ChemicalVisionService {
-  async analyzeChemicalImage(image: File | Blob): Promise<{ items: DetectedChemical[]; warnings: string[] }> {
+  async analyzeChemicalImage(image: File | Blob, options?: { openAiApiKey?: string }): Promise<{ items: DetectedChemical[]; warnings: string[] }> {
     await new Promise((resolve) => setTimeout(resolve, 350));
+    if (options?.openAiApiKey && image.size > 0) {
+      const aiResult = await analyzeWithOpenAIVision(image, options.openAiApiKey);
+      if (aiResult.items.length > 0) return aiResult;
+    }
     const [profile, ocr] = await Promise.all([profileImage(image), readLabelText(image)]);
     const parsed = await parseLabelText(ocr.text);
 
@@ -134,6 +138,106 @@ export class MockChemicalVisionService implements ChemicalVisionService {
     }
 
     return fallbackByBottleProfile(profile, ocr.text);
+  }
+}
+
+type VisionExtract = {
+  chemicalName?: string | null;
+  quantity?: number | null;
+  containerSize?: number | null;
+  unit?: Unit | null;
+  physicalState?: PhysicalState | null;
+  manufacturer?: string | null;
+  catalogNumber?: string | null;
+  casNumber?: string | null;
+  unNumber?: string | null;
+  grade?: string | null;
+  confidence?: number | null;
+};
+
+async function analyzeWithOpenAIVision(image: File | Blob, apiKey: string): Promise<{ items: DetectedChemical[]; warnings: string[] }> {
+  try {
+    const imageUrl = await blobToDataUrl(image);
+    const response = await fetch("https://api.openai.com/v1/responses", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "gpt-4.1-mini",
+        input: [
+          {
+            role: "user",
+            content: [
+              {
+                type: "input_text",
+                text: "Read this lab chemical container label. Extract the real chemical/product name, not grade/quality text such as ACS reagent, reagent grade, powder, 99+%, certified, for analysis, lot, expiry, or hazard text. Return only compact JSON with keys: chemicalName, quantity, containerSize, unit, physicalState, manufacturer, catalogNumber, casNumber, unNumber, grade, confidence. unit must be one of g, kg, mL, L. physicalState must be Solid, Liquid, Gas, or Unknown.",
+              },
+              { type: "input_image", image_url: imageUrl },
+            ],
+          },
+        ],
+      }),
+    });
+    if (!response.ok) return { items: [], warnings: ["OpenAI Vision OCR could not process the image. Tesseract fallback was used."] };
+    const data = await response.json();
+    const outputText = extractOpenAIOutputText(data);
+    const extracted = parseVisionJson(outputText);
+    if (!extracted?.chemicalName) return { items: [], warnings: ["OpenAI Vision OCR did not find a chemical name. Tesseract fallback was used."] };
+
+    const pubChem = await lookupPubChemName(extracted.chemicalName);
+    const name = pubChem?.name ?? cleanChemicalNameCandidate(extracted.chemicalName);
+    const state = normalizeState(extracted.physicalState) ?? pubChem?.physicalState ?? "Unknown";
+    const unit = normalizeUnit(extracted.unit);
+    const confidence = Math.max(0.55, Math.min(0.98, extracted.confidence ?? 0.86));
+
+    return {
+      warnings: [
+        "OpenAI Vision OCR used for label reading. Operator confirmation is still required.",
+        pubChem ? `Matched PubChem CID ${pubChem.cid}${pubChem.iupacName ? ` (${pubChem.iupacName})` : ""}.` : "PubChem match was not found for the extracted name.",
+      ],
+      items: [
+        detected({
+          name,
+          quantity: normalizeNumber(extracted.quantity) ?? 1,
+          size: normalizeNumber(extracted.containerSize),
+          unit,
+          state,
+          confidence,
+          manufacturer: extracted.manufacturer ?? (pubChem ? "PubChem" : undefined),
+          catalogNumber: extracted.catalogNumber ?? (pubChem ? `PubChem CID ${pubChem.cid}` : null),
+          cas: extracted.casNumber ?? pubChem?.casNumber ?? null,
+          un: extracted.unNumber ?? null,
+          source: "database",
+        }),
+      ],
+    };
+  } catch {
+    return { items: [], warnings: ["OpenAI Vision OCR failed. Tesseract fallback was used."] };
+  }
+}
+
+function blobToDataUrl(blob: Blob) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(blob);
+  });
+}
+
+function extractOpenAIOutputText(data: unknown) {
+  const maybe = data as { output_text?: string; output?: Array<{ content?: Array<{ text?: string }> }> };
+  return maybe.output_text ?? maybe.output?.flatMap((item) => item.content ?? []).map((content) => content.text ?? "").join("\n") ?? "";
+}
+
+function parseVisionJson(text: string): VisionExtract | null {
+  try {
+    const json = text.match(/\{[\s\S]*\}/)?.[0] ?? text;
+    return JSON.parse(json) as VisionExtract;
+  } catch {
+    return null;
   }
 }
 
@@ -396,6 +500,31 @@ function scoreLabelName(line: string) {
 
 function titleCaseChemicalName(name: string) {
   return name.toLowerCase().replace(/\b[a-z]/g, (letter) => letter.toUpperCase());
+}
+
+function normalizeNumber(value: unknown) {
+  const number = typeof value === "number" ? value : typeof value === "string" ? Number(value.replace(",", ".")) : null;
+  return number && Number.isFinite(number) ? number : null;
+}
+
+function normalizeUnit(value: unknown): Unit | null {
+  if (typeof value !== "string") return null;
+  const lower = value.toLowerCase();
+  if (lower === "kg") return "kg";
+  if (lower === "g") return "g";
+  if (lower === "ml") return "mL";
+  if (lower === "l") return "L";
+  return null;
+}
+
+function normalizeState(value: unknown): PhysicalState | null {
+  if (value === "Solid" || value === "Liquid" || value === "Gas" || value === "Unknown") return value;
+  if (typeof value !== "string") return null;
+  const lower = value.toLowerCase();
+  if (lower.includes("solid")) return "Solid";
+  if (lower.includes("liquid")) return "Liquid";
+  if (lower.includes("gas")) return "Gas";
+  return null;
 }
 
 function inferStateFromWords(text: string): PhysicalState {
