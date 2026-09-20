@@ -96,6 +96,20 @@ export async function lookupPubChemName(name: string): Promise<PubChemMatch | nu
   }
 }
 
+export async function searchPubChem(query: string): Promise<PubChemMatch[]> {
+  const direct = await lookupPubChemName(query);
+  if (direct) return [direct];
+
+  const candidates = buildNameCandidates(query);
+  const results: PubChemMatch[] = [];
+  for (const candidate of candidates) {
+    const match = await lookupPubChemName(candidate);
+    if (match && !results.some((item) => item.cid === match.cid)) results.push(match);
+    if (results.length >= 6) break;
+  }
+  return results;
+}
+
 function buildNameCandidates(rawText: string) {
   const cleanedLines = rawText
     .split(/\r?\n/)
