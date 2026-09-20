@@ -6,5 +6,6 @@ allowBuilds:
   msgpackr-extract: set this to true or false
   prisma: true
   sharp: false
+  tesseract.js: true
   unrs-resolver: false
   workerd: set this to true or false
