@@ -55,6 +55,12 @@ const stopWords = new Set([
   "batch",
   "lot",
   "expiry",
+  "exp",
+  "store",
+  "storage",
+  "origin",
+  "tested",
+  "filtered",
 ]);
 
 export async function lookupPubChemFromText(rawText: string): Promise<PubChemMatch | null> {
@@ -113,36 +119,74 @@ export async function searchPubChem(query: string): Promise<PubChemMatch[]> {
 function buildNameCandidates(rawText: string) {
   const cleanedLines = rawText
     .split(/\r?\n/)
-    .map((line) => line.replace(/[^a-zA-Z0-9+,\-.\s]/g, " ").replace(/\s+/g, " ").trim())
+    .map((line) => line.replace(/[|()[\]{}]/g, " ").replace(/[^a-zA-Z0-9+,\-./\s]/g, " ").replace(/\s+/g, " ").trim())
     .filter((line) => line.length >= 4 && line.length <= 80);
 
-  const candidates = new Set<string>();
+  const candidates: string[] = [];
+  const addCandidate = (candidate: string) => {
+    const cleaned = cleanupCandidate(candidate);
+    if (!cleaned) return;
+    if (!candidates.some((item) => item.toLowerCase() === cleaned.toLowerCase())) candidates.push(cleaned);
+  };
+
+  for (const cas of rawText.match(/\b\d{2,7}-\d{2}-\d\b/g) ?? []) addCandidate(cas);
 
   for (const line of cleanedLines) {
     const lower = line.toLowerCase();
-    if ([...stopWords].some((word) => lower === word)) continue;
-    if (/\b\d{2,7}-\d{2}-\d\b/.test(lower)) continue;
-    if (/\b(?:un\s*)?\d{4}\b/.test(lower)) continue;
-    if (/\b\d+(?:[.,]\d+)?\s*(?:kg|g|ml|l)\b/i.test(lower)) continue;
-    candidates.add(line);
+    if (isNoiseLine(lower)) continue;
+    addCandidate(line);
+    for (const fragment of line.split(/\s{2,}|[,;]/)) addCandidate(fragment);
   }
 
   const words = rawText
     .toLowerCase()
     .replace(/[^a-z0-9+\-\s]/g, " ")
     .split(/\s+/)
-    .filter((word) => word.length > 2 && !stopWords.has(word) && !/^\d+$/.test(word));
+    .filter((word) => word.length > 2 && !stopWords.has(word) && !/^\d+$/.test(word) && !/^[a-z]\d+$/i.test(word));
 
   for (let size = 4; size >= 1; size--) {
     for (let index = 0; index <= words.length - size; index++) {
       const phrase = words.slice(index, index + size).join(" ");
-      if (phrase.length >= 4) candidates.add(phrase);
-      if (candidates.size >= 18) break;
+      if (phrase.length >= 4) addCandidate(phrase);
+      if (candidates.length >= 28) break;
     }
-    if (candidates.size >= 18) break;
+    if (candidates.length >= 28) break;
   }
 
-  return [...candidates].slice(0, 18);
+  return candidates.sort((a, b) => scoreCandidate(b) - scoreCandidate(a)).slice(0, 28);
+}
+
+function cleanupCandidate(candidate: string) {
+  const cleaned = candidate
+    .replace(/\b(?:cat|catalog|product|prod|lot|batch|exp|expiry|store|storage)\b.*$/i, " ")
+    .replace(/\b\d+(?:[.,]\d+)?\s*(?:kg|g|ml|l)\b/gi, " ")
+    .replace(/\b(?:un\s*)?\d{4}\b/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (cleaned.length < 4 || cleaned.length > 64) return "";
+  if (isNoiseLine(cleaned.toLowerCase())) return "";
+  return cleaned;
+}
+
+function isNoiseLine(line: string) {
+  if ([...stopWords].some((word) => line === word)) return true;
+  if (/\b(?:lot|batch|exp|expiry|catalog|cat|product|prod|store|storage|temperature|information|www|only)\b/.test(line)) return true;
+  if (/\b\d+(?:[.,]\d+)?\s*(?:kg|g|ml|l)\b/i.test(line) && !/[a-z]{4,}/i.test(line.replace(/\b(?:ml|kg|g|l)\b/gi, ""))) return true;
+  return false;
+}
+
+function scoreCandidate(candidate: string) {
+  const lower = candidate.toLowerCase();
+  let score = 0;
+  if (/^\d{2,7}-\d{2}-\d$/.test(lower)) score += 100;
+  if (/\b(acid|alcohol|acetone|methanol|ethanol|hydroxide|chloride|sulfate|sulphate|nitrate|serum|buffer|medium|solution)\b/.test(lower)) score += 35;
+  if (/^[a-z][a-z\s,+-]+$/i.test(candidate)) score += 20;
+  const wordCount = candidate.split(/\s+/).length;
+  if (wordCount >= 2 && wordCount <= 5) score += 18;
+  if (/[a-z]\d{3,}/i.test(candidate)) score -= 35;
+  if (/[0-9]/.test(candidate) && !/^\d{2,7}-\d{2}-\d$/.test(lower)) score -= 15;
+  if (/[a-z]{4,}/i.test(candidate)) score += 10;
+  return score;
 }
 
 function chooseDisplayName(original: string, synonyms: string[]) {

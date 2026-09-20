@@ -173,12 +173,15 @@ async function buildOcrVariants(image: File | Blob, objectUrl: string) {
   try {
     const bitmap = await createImageBitmap(image);
     const crops = [
+      { x: 0.08, y: 0.20, w: 0.84, h: 0.70 },
       { x: 0.18, y: 0.28, w: 0.64, h: 0.62 },
       { x: 0.23, y: 0.35, w: 0.54, h: 0.48 },
       { x: 0.12, y: 0.18, w: 0.76, h: 0.72 },
+      { x: 0.20, y: 0.42, w: 0.60, h: 0.24 },
     ];
     for (const crop of crops) {
-      variants.push(renderOcrVariant(bitmap, crop));
+      variants.push(renderOcrVariant(bitmap, crop, "balanced"));
+      variants.push(renderOcrVariant(bitmap, crop, "threshold"));
     }
   } catch {
     return variants;
@@ -186,7 +189,7 @@ async function buildOcrVariants(image: File | Blob, objectUrl: string) {
   return variants;
 }
 
-function renderOcrVariant(bitmap: ImageBitmap, crop: { x: number; y: number; w: number; h: number }) {
+function renderOcrVariant(bitmap: ImageBitmap, crop: { x: number; y: number; w: number; h: number }, mode: "balanced" | "threshold") {
   const sourceX = Math.round(bitmap.width * crop.x);
   const sourceY = Math.round(bitmap.height * crop.y);
   const sourceW = Math.round(bitmap.width * crop.w);
@@ -205,7 +208,7 @@ function renderOcrVariant(bitmap: ImageBitmap, crop: { x: number; y: number; w: 
   const data = imageData.data;
   for (let index = 0; index < data.length; index += 4) {
     const gray = data[index] * 0.299 + data[index + 1] * 0.587 + data[index + 2] * 0.114;
-    const contrasted = gray > 178 ? 255 : gray < 115 ? 0 : gray * 0.85;
+    const contrasted = mode === "threshold" ? (gray > 155 ? 255 : 0) : gray > 178 ? 255 : gray < 115 ? 0 : gray * 0.85;
     data[index] = contrasted;
     data[index + 1] = contrasted;
     data[index + 2] = contrasted;
@@ -250,7 +253,8 @@ async function parseLabelText(text: string): Promise<{ item: DetectedChemical | 
   const un = extractUn(normalized) ?? reference?.un ?? null;
   const manufacturer = labProduct?.manufacturer ?? inferManufacturer(normalized) ?? (pubChem ? "PubChem" : undefined);
   const catalogNumber = extractCatalogNumber(normalized) ?? labProduct?.catalogNumbers[0] ?? (pubChem ? `PubChem CID ${pubChem.cid}` : null);
-  const name = labProduct?.name ?? pubChem?.name ?? reference?.name ?? null;
+  const labelName = extractLikelyLabelName(text);
+  const name = labProduct?.name ?? pubChem?.name ?? reference?.name ?? labelName;
   const confidence = scoreExtraction(Boolean(name), Boolean(size), Boolean(quantity), state !== "Unknown", Boolean(pubChem) || Boolean(labProduct));
 
   if (!name && !size) {
@@ -344,6 +348,40 @@ function extractCatalogNumber(text: string) {
   if (explicit) return explicit[1].toUpperCase();
   const sigmaLike = text.match(/\b([a-z]\d{4,6})\b/i);
   return sigmaLike ? sigmaLike[1].toUpperCase() : null;
+}
+
+function extractLikelyLabelName(text: string) {
+  const candidates = text
+    .split(/\r?\n/)
+    .map((line) => line.replace(/[|()[\]{}]/g, " ").replace(/[^a-zA-Z0-9+,\-.\s]/g, " ").replace(/\s+/g, " ").trim())
+    .filter((line) => line.length >= 5 && line.length <= 64)
+    .filter((line) => !isLabelNoise(line));
+  const best = candidates.sort((a, b) => scoreLabelName(b) - scoreLabelName(a))[0];
+  return best ? titleCaseChemicalName(best) : null;
+}
+
+function isLabelNoise(line: string) {
+  const lower = line.toLowerCase();
+  if (/\b(?:lot|batch|exp|expiry|cat|catalog|product|prod|store|storage|temperature|information|warning|danger|only|sigma|aldrich|merck|millipore|fisher)\b/.test(lower)) return true;
+  if (/\b\d+(?:[.,]\d+)?\s*(?:kg|g|ml|l)\b/i.test(lower) && !/\b(?:solution|acid|alcohol|serum|medium|buffer)\b/i.test(lower)) return true;
+  if (/^\W*\d/.test(line) && !/\b(?:acid|alcohol|serum|medium|buffer|solution)\b/i.test(line)) return true;
+  return false;
+}
+
+function scoreLabelName(line: string) {
+  const lower = line.toLowerCase();
+  let score = 0;
+  if (/\b(acid|alcohol|acetone|methanol|ethanol|hydroxide|chloride|sulfate|sulphate|nitrate|serum|buffer|medium|solution|reagent)\b/.test(lower)) score += 40;
+  const words = line.split(/\s+/).filter(Boolean);
+  if (words.length >= 2 && words.length <= 6) score += 24;
+  if (line === line.toUpperCase()) score += 12;
+  if (/[a-zA-Z]{5,}/.test(line)) score += 12;
+  if (/[0-9]/.test(line)) score -= 20;
+  return score;
+}
+
+function titleCaseChemicalName(name: string) {
+  return name.toLowerCase().replace(/\b[a-z]/g, (letter) => letter.toUpperCase());
 }
 
 function inferStateFromWords(text: string): PhysicalState {
