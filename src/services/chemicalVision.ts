@@ -242,15 +242,15 @@ async function parseLabelText(text: string): Promise<{ item: DetectedChemical | 
 
   const labProduct = findLabProduct(normalized);
   const reference = findChemical(normalized);
-  const pubChem = reference || labProduct ? null : await lookupPubChemFromText(text);
+  const pubChem = await lookupPubChemFromText(text);
   const size = extractSize(normalized) ?? labProduct?.defaultSize ?? null;
   const quantity = extractQuantity(normalized);
-  const state = labProduct?.state ?? reference?.state ?? pubChem?.physicalState ?? inferStateFromWords(normalized);
-  const cas = extractCas(normalized) ?? reference?.cas ?? pubChem?.casNumber ?? null;
+  const state = labProduct?.state ?? pubChem?.physicalState ?? reference?.state ?? inferStateFromWords(normalized);
+  const cas = extractCas(normalized) ?? pubChem?.casNumber ?? reference?.cas ?? null;
   const un = extractUn(normalized) ?? reference?.un ?? null;
-  const manufacturer = labProduct?.manufacturer ?? inferManufacturer(normalized);
-  const catalogNumber = extractCatalogNumber(normalized) ?? labProduct?.catalogNumbers[0] ?? null;
-  const name = labProduct?.name ?? reference?.name ?? pubChem?.name ?? null;
+  const manufacturer = labProduct?.manufacturer ?? inferManufacturer(normalized) ?? (pubChem ? "PubChem" : undefined);
+  const catalogNumber = extractCatalogNumber(normalized) ?? labProduct?.catalogNumbers[0] ?? (pubChem ? `PubChem CID ${pubChem.cid}` : null);
+  const name = labProduct?.name ?? pubChem?.name ?? reference?.name ?? null;
   const confidence = scoreExtraction(Boolean(name), Boolean(size), Boolean(quantity), state !== "Unknown", Boolean(pubChem) || Boolean(labProduct));
 
   if (!name && !size) {
@@ -276,7 +276,7 @@ async function parseLabelText(text: string): Promise<{ item: DetectedChemical | 
       catalogNumber,
       cas,
       un,
-      source: reference ? "label" : "image",
+      source: pubChem || reference ? "database" : "image",
     }),
   };
 }

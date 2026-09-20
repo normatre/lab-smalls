@@ -3,16 +3,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, Archive, Camera, CheckCircle2, ClipboardCheck, Database, FileDown, Filter, History, Home, ImageUp, LogIn, Plus, Printer, RotateCcw, Search, Settings, ShieldCheck, Trash2, Wifi, WifiOff } from "lucide-react";
 import { chemicalVisionService } from "@/services/chemicalVision";
-import { searchPubChem, type PubChemMatch } from "@/services/pubChem";
 import { demoAudit, demoDrums, demoProducts, field } from "@/lib/demo-data";
 import { completionBlockers, confidenceNeedsReview, mergeDuplicateItems, totalContainers } from "@/lib/inventory";
 import { downloadCsv, downloadPdf, downloadXlsx, openPrintView } from "@/lib/exporters";
 import type { Drum, InventoryItem, PhysicalState, Product, RetentionPolicy, Role, Unit } from "@/types/lab-smalls";
 
-type View = "Dashboard" | "New Drum" | "Active Drums" | "History" | "Product Database" | "Settings";
+type View = "Dashboard" | "New Drum" | "Active Drums" | "History" | "PubChem Database" | "Settings";
 const navItems: { label: View; icon: typeof Home }[] = [
   { label: "Dashboard", icon: Home }, { label: "New Drum", icon: Plus }, { label: "Active Drums", icon: Archive },
-  { label: "History", icon: History }, { label: "Product Database", icon: Database }, { label: "Settings", icon: Settings },
+  { label: "History", icon: History }, { label: "PubChem Database", icon: Database }, { label: "Settings", icon: Settings },
 ];
 const units: Unit[] = ["g", "kg", "mL", "L"];
 const states: PhysicalState[] = ["Solid", "Liquid", "Gas", "Unknown"];
@@ -95,12 +94,12 @@ export default function HomePage() {
           {view === "New Drum" && <DrumForm nextNumber={drums.length + 1} operator="Demo Chemist" onCreate={createDrum} />}
           {view === "Active Drums" && <ActiveDrums drums={activeDrums} selected={selectedDrum} onSelect={setSelectedDrumId} onDelete={deleteDrum} onUpdate={updateDrum} products={products} saveProduct={(product) => setProducts((current) => [product, ...current])} />}
           {view === "History" && <HistoryView drums={completedDrums.length ? completedDrums : drums} onDelete={deleteDrum} onOpen={(id) => { setSelectedDrumId(id); setView("Active Drums"); }} />}
-          {view === "Product Database" && <ProductDatabase products={products} setProducts={setProducts} />}
+          {view === "PubChem Database" && <ProductDatabase products={products} />}
           {view === "Settings" && <SettingsView retention={retention} setRetention={setRetention} role={role} resetDemo={() => { localStorage.removeItem(storageKey); setDrums(demoDrums); setProducts(demoProducts); setSelectedDrumId(demoDrums[0].id); }} />}
         </section>
       </div>
       <nav className="fixed inset-x-0 bottom-0 z-40 grid grid-cols-5 border-t border-slate-200 bg-white lg:hidden">
-        {navItems.slice(1).map((item) => <button key={item.label} onClick={() => setView(item.label)} className={`flex min-h-16 flex-col items-center justify-center gap-1 text-xs font-semibold ${view === item.label ? "text-emerald-700" : "text-slate-600"}`}><item.icon size={22} /><span>{item.label.replace("Product Database", "Products").replace("Active Drums", "Active")}</span></button>)}
+        {navItems.slice(1).map((item) => <button key={item.label} onClick={() => setView(item.label)} className={`flex min-h-16 flex-col items-center justify-center gap-1 text-xs font-semibold ${view === item.label ? "text-emerald-700" : "text-slate-600"}`}><item.icon size={22} /><span>{item.label.replace("PubChem Database", "PubChem").replace("Active Drums", "Active")}</span></button>)}
       </nav>
     </main>
   );
@@ -226,45 +225,10 @@ function HistoryView({ drums, onOpen, onDelete }: { drums: Drum[]; onOpen: (id: 
   const results = useMemo(() => drums.filter((drum) => [drum.drumId, drum.operatorName, drum.date, ...drum.items.flatMap((item) => [item.chemicalName.value, item.casNumber, item.unNumber])].join(" ").toLowerCase().includes(query.toLowerCase())), [drums, query]);
   return <Panel title="Searchable History"><div className="relative mb-4"><Search className="absolute left-3 top-4 text-slate-500" size={20} /><input className="input pl-11" placeholder="Search drum ID, chemical, date, operator, CAS, UN" value={query} onChange={(e) => setQuery(e.target.value)} /></div><div className="space-y-3">{results.map((drum) => <DrumListButton key={drum.id} drum={drum} onClick={() => onOpen(drum.id)} onDelete={() => onDelete(drum.id)} />)}</div></Panel>;
 }
-function ProductDatabase({ products, setProducts }: { products: Product[]; setProducts: (products: Product[]) => void }) {
-  const [query, setQuery] = useState("Acetone");
-  const [results, setResults] = useState<PubChemMatch[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
-  const saved = products.filter((product) => [product.canonicalName, product.casNumber, product.unNumber, product.manufacturer].join(" ").toLowerCase().includes(query.toLowerCase()));
-
-  async function runSearch() {
-    const trimmed = query.trim();
-    if (!trimmed) return;
-    setLoading(true);
-    setError("");
-    try {
-      const matches = await searchPubChem(trimmed);
-      setResults(matches);
-      if (matches.length === 0) setError("No PubChem result found. Try a CAS number, IUPAC name, or simpler chemical name.");
-    } catch {
-      setError("PubChem search failed. Check connection and try again.");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  function saveMatch(match: PubChemMatch) {
-    const product: Product = {
-      id: `pubchem-${match.cid}`,
-      canonicalName: match.name,
-      manufacturer: "PubChem",
-      catalogNumber: `CID ${match.cid}`,
-      casNumber: match.casNumber,
-      typicalContainerSize: undefined,
-      unit: undefined,
-      physicalState: match.physicalState,
-    };
-    setProducts([product, ...products.filter((current) => current.id !== product.id)]);
-  }
-
-  return <Panel title="PubChem Database"><form className="mb-4 flex flex-col gap-3 sm:flex-row" onSubmit={(event) => { event.preventDefault(); void runSearch(); }}><div className="relative flex-1"><Search className="absolute left-3 top-4 text-slate-500" size={20} /><input className="input pl-11" placeholder="Search PubChem by chemical name, synonym, or CAS" value={query} onChange={(event) => setQuery(event.target.value)} /></div><button disabled={loading} className="touch-button justify-center bg-slate-900 text-white" type="submit"><Search size={20} />{loading ? "Searching..." : "Search PubChem"}</button></form><p className="mb-4 rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">Results come from PubChem. Save a result only when you want to reuse it locally for label review and prefill.</p>{error && <p className="mb-4 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm font-semibold text-amber-900">{error}</p>}<div className="grid gap-3">{results.map((match) => <article key={match.cid} className="rounded-lg border border-slate-200 bg-white p-4"><div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between"><div><h3 className="text-lg font-bold">{match.name}</h3><p className="mt-1 text-sm text-slate-600">CID {match.cid}{match.casNumber ? ` · CAS ${match.casNumber}` : ""} · {match.physicalState}</p><p className="mt-1 text-sm text-slate-600">Formula {match.molecularFormula ?? "-"} · MW {match.molecularWeight ?? "-"}</p>{match.iupacName && <p className="mt-2 text-sm text-slate-700"><strong>IUPAC:</strong> {match.iupacName}</p>}<p className="mt-2 text-sm text-slate-600"><strong>Synonyms:</strong> {match.synonyms.slice(0, 8).join(", ") || "-"}</p></div><button onClick={() => saveMatch(match)} className="touch-button shrink-0 justify-center border border-emerald-300 bg-white text-emerald-800" type="button"><Database size={20} />Save locally</button></div></article>)}</div><section className="mt-5"><h3 className="mb-3 text-base font-bold">Saved local matches</h3><div className="grid gap-3">{saved.length === 0 && <p className="rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm font-semibold text-slate-600">No saved local product matches for this search.</p>}{saved.map((product) => <div key={product.id} className="flex flex-col gap-3 rounded-lg border border-slate-200 bg-white p-4 sm:flex-row sm:items-center sm:justify-between"><div><strong>{product.canonicalName}</strong><p className="text-sm text-slate-600">{product.manufacturer ?? "Local"}{product.catalogNumber ? ` · ${product.catalogNumber}` : ""}{product.casNumber ? ` · CAS ${product.casNumber}` : ""} · {product.physicalState}</p></div><button onClick={() => setProducts(products.filter((current) => current.id !== product.id))} className="touch-button justify-center border border-red-200 bg-white text-red-700"><Trash2 size={20} />Remove</button></div>)}</div></section></Panel>;
-}function SettingsView({ retention, setRetention, role, resetDemo }: { retention: RetentionPolicy; setRetention: (value: RetentionPolicy) => void; role: Role; resetDemo: () => void }) {
+function ProductDatabase({ products }: { products: Product[] }) {
+  return <Panel title="PubChem Database"><div className="grid gap-3 md:grid-cols-3"><div className="rounded-lg border border-emerald-200 bg-emerald-50 p-4"><Database className="mb-3 text-emerald-800" size={28} /><h3 className="font-bold text-emerald-950">Automatic chemical lookup</h3><p className="mt-2 text-sm text-emerald-900">When a drum photo is uploaded, OCR reads the label name and the app checks PubChem in the background. Operators do not search this database manually.</p></div><div className="rounded-lg border border-slate-200 bg-white p-4"><ClipboardCheck className="mb-3 text-slate-700" size={28} /><h3 className="font-bold">Photo-derived drum items</h3><p className="mt-2 text-sm text-slate-600">The photographed label provides quantity and container size. PubChem enriches the chemical identity, CAS, physical state, and CID when the OCR name can be matched.</p></div><div className="rounded-lg border border-amber-200 bg-amber-50 p-4"><AlertTriangle className="mb-3 text-amber-800" size={28} /><h3 className="font-bold text-amber-950">Operator review</h3><p className="mt-2 text-sm text-amber-900">Every detected item is placed directly into the selected drum. Missing or uncertain fields stay flagged in Review Items until corrected.</p></div></div><section className="mt-5"><h3 className="mb-3 text-base font-bold">Local fallback products</h3><div className="grid gap-3">{products.length === 0 && <p className="rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm font-semibold text-slate-600">No local fallback products are saved in this browser.</p>}{products.map((product) => <div key={product.id} className="rounded-lg border border-slate-200 bg-white p-4"><strong>{product.canonicalName}</strong><p className="mt-1 text-sm text-slate-600">{product.manufacturer ?? "Local"}{product.catalogNumber ? ` · ${product.catalogNumber}` : ""}{product.casNumber ? ` · CAS ${product.casNumber}` : ""} · {product.physicalState}</p></div>)}</div></section></Panel>;
+}
+function SettingsView({ retention, setRetention, role, resetDemo }: { retention: RetentionPolicy; setRetention: (value: RetentionPolicy) => void; role: Role; resetDemo: () => void }) {
   return <Panel title="Settings"><div className="grid gap-4"><Label text="Image retention"><select className="input" value={retention} onChange={(e) => setRetention(e.target.value as RetentionPolicy)}><option>Delete after processing</option><option>Keep until drum completion</option><option>Keep permanently</option></select></Label><p className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">Current policy: {retention}. Drum, image preview, product, and setting changes are saved in this browser automatically.</p><button onClick={resetDemo} className="touch-button justify-center border border-slate-300 bg-white"><RotateCcw size={20} />Reset demo data</button><div className="rounded-lg border border-slate-200 p-3"><strong>Role permissions</strong><p className="text-sm text-slate-600">{role}: {role === "Chemist" ? "Create, scan, edit active drums, complete drums, view history." : role === "Supervisor" ? "Chemist permissions plus review all drums." : "Full access including users, products, and settings."}</p></div><Panel title="Audit trail sample"><div className="space-y-2 text-sm">{demoAudit.map((event) => <p key={event.id}><strong>{event.action}</strong> · {event.drumId} · {event.user} · {new Date(event.timestamp).toLocaleString()}</p>)}</div></Panel></div></Panel>;
 }
 
