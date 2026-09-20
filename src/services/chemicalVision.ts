@@ -354,14 +354,27 @@ function extractLikelyLabelName(text: string) {
   const candidates = text
     .split(/\r?\n/)
     .map((line) => line.replace(/[|()[\]{}]/g, " ").replace(/[^a-zA-Z0-9+,\-.\s]/g, " ").replace(/\s+/g, " ").trim())
+    .flatMap((line) => [line, ...line.split(/[,;]/)])
+    .map(cleanChemicalNameCandidate)
     .filter((line) => line.length >= 5 && line.length <= 64)
     .filter((line) => !isLabelNoise(line));
   const best = candidates.sort((a, b) => scoreLabelName(b) - scoreLabelName(a))[0];
   return best ? titleCaseChemicalName(best) : null;
 }
 
+function cleanChemicalNameCandidate(line: string) {
+  return line
+    .replace(/\b(?:a\.?\s*c\.?\s*s\.?|acs|reagent|grade|powder|crystalline|granular|pellets?|flakes?|anhydrous|hydrate|for\s+analysis|extra\s+pure|certified|puriss?|bio\s*reagent)\b.*$/i, " ")
+    .replace(/\b\d+(?:[.,]\d+)?\s*%.*$/i, " ")
+    .replace(/\b\d+(?:[.,]\d+)?\s*(?:kg|g|ml|l)\b/gi, " ")
+    .replace(/\s*,\s*$/, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function isLabelNoise(line: string) {
   const lower = line.toLowerCase();
+  if (/^(?:a\.?\s*c\.?\s*s\.?|acs)?\s*(?:reagent|grade|powder|crystalline|granular|pellets?|flakes?|anhydrous|hydrate)\s*$/i.test(line)) return true;
   if (/\b(?:lot|batch|exp|expiry|cat|catalog|product|prod|store|storage|temperature|information|warning|danger|only|sigma|aldrich|merck|millipore|fisher)\b/.test(lower)) return true;
   if (/\b\d+(?:[.,]\d+)?\s*(?:kg|g|ml|l)\b/i.test(lower) && !/\b(?:solution|acid|alcohol|serum|medium|buffer)\b/i.test(lower)) return true;
   if (/^\W*\d/.test(line) && !/\b(?:acid|alcohol|serum|medium|buffer|solution)\b/i.test(line)) return true;
@@ -371,12 +384,13 @@ function isLabelNoise(line: string) {
 function scoreLabelName(line: string) {
   const lower = line.toLowerCase();
   let score = 0;
-  if (/\b(acid|alcohol|acetone|methanol|ethanol|hydroxide|chloride|sulfate|sulphate|nitrate|serum|buffer|medium|solution|reagent)\b/.test(lower)) score += 40;
+  if (/\b(acid|alcohol|acetone|methanol|ethanol|hydroxide|chloride|sulfate|sulphate|nitrate|carbonate|phosphate|oxide|peroxide|serum|buffer|medium|solution)\b/.test(lower)) score += 40;
   const words = line.split(/\s+/).filter(Boolean);
   if (words.length >= 2 && words.length <= 6) score += 24;
   if (line === line.toUpperCase()) score += 12;
   if (/[a-zA-Z]{5,}/.test(line)) score += 12;
   if (/[0-9]/.test(line)) score -= 20;
+  if (/\b(?:reagent|grade|powder|acs|a\.?\s*c\.?\s*s\.?|puriss?|certified)\b/i.test(line)) score -= 45;
   return score;
 }
 

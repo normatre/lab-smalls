@@ -61,6 +61,11 @@ const stopWords = new Set([
   "origin",
   "tested",
   "filtered",
+  "acs",
+  "a.c.s",
+  "powder",
+  "anhydrous",
+  "hydrate",
 ]);
 
 export async function lookupPubChemFromText(rawText: string): Promise<PubChemMatch | null> {
@@ -158,9 +163,13 @@ function buildNameCandidates(rawText: string) {
 
 function cleanupCandidate(candidate: string) {
   const cleaned = candidate
+    .replace(/\b(?:a\.?\s*c\.?\s*s\.?|acs|reagent|grade|powder|crystalline|granular|pellets?|flakes?|anhydrous|hydrate|for\s+analysis|extra\s+pure|certified|puriss?|bio\s*reagent)\b.*$/i, " ")
+    .replace(/\b\d+(?:[.,]\d+)?\s*%.*$/i, " ")
+    .replace(/[,;]\s*(?:powder|crystalline|granular|pellets?|flakes?|anhydrous|hydrate|reagent|grade|acs|a\.?\s*c\.?\s*s\.?|for\s+analysis|extra\s+pure|certified|puriss?|bio\s*reagent)\b.*$/i, " ")
     .replace(/\b(?:cat|catalog|product|prod|lot|batch|exp|expiry|store|storage)\b.*$/i, " ")
     .replace(/\b\d+(?:[.,]\d+)?\s*(?:kg|g|ml|l)\b/gi, " ")
     .replace(/\b(?:un\s*)?\d{4}\b/gi, " ")
+    .replace(/\s*,\s*$/, " ")
     .replace(/\s+/g, " ")
     .trim();
   if (cleaned.length < 4 || cleaned.length > 64) return "";
@@ -170,6 +179,7 @@ function cleanupCandidate(candidate: string) {
 
 function isNoiseLine(line: string) {
   if ([...stopWords].some((word) => line === word)) return true;
+  if (/^(?:a\.?\s*c\.?\s*s\.?|acs)?\s*(?:reagent|grade|powder|crystalline|granular|pellets?|flakes?|anhydrous|hydrate)\s*$/i.test(line)) return true;
   if (/\b(?:lot|batch|exp|expiry|catalog|cat|product|prod|store|storage|temperature|information|www|only)\b/.test(line)) return true;
   if (/\b\d+(?:[.,]\d+)?\s*(?:kg|g|ml|l)\b/i.test(line) && !/[a-z]{4,}/i.test(line.replace(/\b(?:ml|kg|g|l)\b/gi, ""))) return true;
   return false;
@@ -179,10 +189,11 @@ function scoreCandidate(candidate: string) {
   const lower = candidate.toLowerCase();
   let score = 0;
   if (/^\d{2,7}-\d{2}-\d$/.test(lower)) score += 100;
-  if (/\b(acid|alcohol|acetone|methanol|ethanol|hydroxide|chloride|sulfate|sulphate|nitrate|serum|buffer|medium|solution)\b/.test(lower)) score += 35;
+  if (/\b(acid|alcohol|acetone|methanol|ethanol|hydroxide|chloride|sulfate|sulphate|nitrate|carbonate|phosphate|oxide|peroxide|serum|buffer|medium|solution)\b/.test(lower)) score += 35;
   if (/^[a-z][a-z\s,+-]+$/i.test(candidate)) score += 20;
   const wordCount = candidate.split(/\s+/).length;
   if (wordCount >= 2 && wordCount <= 5) score += 18;
+  if (/\b(?:reagent|grade|powder|acs|a\.?\s*c\.?\s*s\.?|puriss?|certified)\b/i.test(candidate)) score -= 45;
   if (/[a-z]\d{3,}/i.test(candidate)) score -= 35;
   if (/[0-9]/.test(candidate) && !/^\d{2,7}-\d{2}-\d$/.test(lower)) score -= 15;
   if (/[a-z]{4,}/i.test(candidate)) score += 10;
