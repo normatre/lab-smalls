@@ -14,6 +14,14 @@ type ChemicalReference = {
   cas?: string;
   un?: string;
 };
+type LabProductReference = {
+  name: string;
+  aliases: string[];
+  catalogNumbers: string[];
+  manufacturer: string;
+  state: PhysicalState;
+  defaultSize?: { value: number; unit: Unit };
+};
 
 const chemicalCatalog: ChemicalReference[] = [
   { name: "Acetone", aliases: ["acetone", "propanone"], state: "Liquid", cas: "67-64-1", un: "UN1090" },
@@ -37,6 +45,38 @@ const chemicalCatalog: ChemicalReference[] = [
   { name: "Phenol", aliases: ["phenol", "carbolic acid"], state: "Solid", cas: "108-95-2", un: "UN1671" },
 ];
 
+const labProductCatalog: LabProductReference[] = [
+  {
+    name: "Fetal Bovine Serum",
+    aliases: ["fetal bovine serum", "fbs", "brazil origin", "sterile filtered", "cell culture tested", "foetal bovine serum"],
+    catalogNumbers: ["F7524"],
+    manufacturer: "Sigma-Aldrich",
+    state: "Liquid",
+    defaultSize: { value: 500, unit: "mL" },
+  },
+  {
+    name: "Dulbecco's Modified Eagle Medium",
+    aliases: ["dulbecco", "dmem", "modified eagle medium", "cell culture medium"],
+    catalogNumbers: ["D6429", "D5796"],
+    manufacturer: "Sigma-Aldrich",
+    state: "Liquid",
+  },
+  {
+    name: "Phosphate Buffered Saline",
+    aliases: ["phosphate buffered saline", "pbs", "buffered saline"],
+    catalogNumbers: ["P4417"],
+    manufacturer: "Sigma-Aldrich",
+    state: "Liquid",
+  },
+  {
+    name: "Trypsin-EDTA Solution",
+    aliases: ["trypsin edta", "trypsin-edta", "trypsin solution"],
+    catalogNumbers: ["T4049", "T3924"],
+    manufacturer: "Sigma-Aldrich",
+    state: "Liquid",
+  },
+];
+
 const sourced = <T,>(value: T | null, confidence: number, source: FieldSource = "label") => ({ value, confidence, source });
 
 const detected = ({
@@ -49,6 +89,7 @@ const detected = ({
   manufacturer = "Merck / Sigma-Aldrich",
   cas = null,
   un = null,
+  catalogNumber = null,
   source = "label",
 }: {
   name: string;
@@ -60,6 +101,7 @@ const detected = ({
   manufacturer?: string;
   cas?: string | null;
   un?: string | null;
+  catalogNumber?: string | null;
   source?: FieldSource;
 }): DetectedChemical => ({
   chemicalName: sourced(name, confidence, source),
@@ -68,7 +110,7 @@ const detected = ({
   unit: sourced(unit, unit ? Math.min(0.94, confidence + 0.06) : 0.35, unit ? "label" : "image"),
   physicalState: sourced(state, state === "Unknown" ? 0.3 : 0.86, state === "Unknown" ? "image" : "database"),
   manufacturer,
-  catalogNumber: null,
+  catalogNumber,
   casNumber: cas,
   unNumber: un,
   confidence,
@@ -101,10 +143,22 @@ async function readLabelText(image: File | Blob): Promise<{ text: string; confid
   try {
     url = URL.createObjectURL(image);
     const { recognize } = await import("tesseract.js");
-    const result = await recognize(url, "eng");
+    const variants = await buildOcrVariants(image, url);
+    const results = await Promise.all(
+      variants.map(async (variant) => {
+        try {
+          const result = await recognize(variant, "eng");
+          return { text: result.data.text ?? "", confidence: Number(result.data.confidence ?? 0) };
+        } catch {
+          return { text: "", confidence: 0 };
+        }
+      }),
+    );
+    const result = results.sort((a, b) => scoreOcrResult(b) - scoreOcrResult(a))[0] ?? { text: "", confidence: 0 };
+    const combinedText = uniqueTextLines(results.map((item) => item.text).join("\n"));
     return {
-      text: result.data.text ?? "",
-      confidence: Number(result.data.confidence ?? 0),
+      text: combinedText || result.text,
+      confidence: result.confidence,
     };
   } catch {
     return { text: "", confidence: 0 };
@@ -113,20 +167,91 @@ async function readLabelText(image: File | Blob): Promise<{ text: string; confid
   }
 }
 
+async function buildOcrVariants(image: File | Blob, objectUrl: string) {
+  const variants = [objectUrl];
+  if (typeof createImageBitmap === "undefined") return variants;
+  try {
+    const bitmap = await createImageBitmap(image);
+    const crops = [
+      { x: 0.18, y: 0.28, w: 0.64, h: 0.62 },
+      { x: 0.23, y: 0.35, w: 0.54, h: 0.48 },
+      { x: 0.12, y: 0.18, w: 0.76, h: 0.72 },
+    ];
+    for (const crop of crops) {
+      variants.push(renderOcrVariant(bitmap, crop));
+    }
+  } catch {
+    return variants;
+  }
+  return variants;
+}
+
+function renderOcrVariant(bitmap: ImageBitmap, crop: { x: number; y: number; w: number; h: number }) {
+  const sourceX = Math.round(bitmap.width * crop.x);
+  const sourceY = Math.round(bitmap.height * crop.y);
+  const sourceW = Math.round(bitmap.width * crop.w);
+  const sourceH = Math.round(bitmap.height * crop.h);
+  const scale = 3;
+  const canvas = document.createElement("canvas");
+  canvas.width = sourceW * scale;
+  canvas.height = sourceH * scale;
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+  if (!context) return "";
+  context.fillStyle = "white";
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  context.imageSmoothingEnabled = true;
+  context.drawImage(bitmap, sourceX, sourceY, sourceW, sourceH, 0, 0, canvas.width, canvas.height);
+  const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
+  const data = imageData.data;
+  for (let index = 0; index < data.length; index += 4) {
+    const gray = data[index] * 0.299 + data[index + 1] * 0.587 + data[index + 2] * 0.114;
+    const contrasted = gray > 178 ? 255 : gray < 115 ? 0 : gray * 0.85;
+    data[index] = contrasted;
+    data[index + 1] = contrasted;
+    data[index + 2] = contrasted;
+  }
+  context.putImageData(imageData, 0, 0);
+  return canvas.toDataURL("image/png");
+}
+
+function scoreOcrResult(result: { text: string; confidence: number }) {
+  const text = result.text.toLowerCase();
+  let score = result.confidence;
+  if (/fetal|bovine|serum|sigma|f7524|500\s*ml/i.test(text)) score += 60;
+  if (/\d+(?:[.,]\d+)?\s*(?:ml|g|kg|l)\b/i.test(text)) score += 20;
+  return score + Math.min(30, text.length / 8);
+}
+
+function uniqueTextLines(text: string) {
+  const seen = new Set<string>();
+  return text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => {
+      const key = line.toLowerCase();
+      if (line.length < 2 || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .join("\n");
+}
+
 async function parseLabelText(text: string): Promise<{ item: DetectedChemical | null; warnings: string[] }> {
   const normalized = normalizeText(text);
   if (normalized.length < 8) return { item: null, warnings: ["No reliable label text was read. Try a closer, sharper photo of the label."] };
 
+  const labProduct = findLabProduct(normalized);
   const reference = findChemical(normalized);
-  const pubChem = reference ? null : await lookupPubChemFromText(text);
-  const size = extractSize(normalized);
+  const pubChem = reference || labProduct ? null : await lookupPubChemFromText(text);
+  const size = extractSize(normalized) ?? labProduct?.defaultSize ?? null;
   const quantity = extractQuantity(normalized);
-  const state = reference?.state ?? pubChem?.physicalState ?? inferStateFromWords(normalized);
+  const state = labProduct?.state ?? reference?.state ?? pubChem?.physicalState ?? inferStateFromWords(normalized);
   const cas = extractCas(normalized) ?? reference?.cas ?? pubChem?.casNumber ?? null;
   const un = extractUn(normalized) ?? reference?.un ?? null;
-  const manufacturer = inferManufacturer(normalized);
-  const name = reference?.name ?? pubChem?.name ?? null;
-  const confidence = scoreExtraction(Boolean(name), Boolean(size), Boolean(quantity), state !== "Unknown", Boolean(pubChem));
+  const manufacturer = labProduct?.manufacturer ?? inferManufacturer(normalized);
+  const catalogNumber = extractCatalogNumber(normalized) ?? labProduct?.catalogNumbers[0] ?? null;
+  const name = labProduct?.name ?? reference?.name ?? pubChem?.name ?? null;
+  const confidence = scoreExtraction(Boolean(name), Boolean(size), Boolean(quantity), state !== "Unknown", Boolean(pubChem) || Boolean(labProduct));
 
   if (!name && !size) {
     return { item: null, warnings: [`OCR text read, but no known chemical name or size was confidently found: "${trimForWarning(text)}"`] };
@@ -134,7 +259,8 @@ async function parseLabelText(text: string): Promise<{ item: DetectedChemical | 
 
   return {
     warnings: [
-      !reference && !pubChem ? "Chemical name was not matched to the built-in chemical catalogue or PubChem." : "",
+      !reference && !pubChem && !labProduct ? "Chemical/product name was not matched to the built-in catalogues or PubChem." : "",
+      labProduct ? `Matched lab product catalogue${catalogNumber ? ` (${catalogNumber})` : ""}.` : "",
       pubChem ? `Matched PubChem CID ${pubChem.cid}${pubChem.iupacName ? ` (${pubChem.iupacName})` : ""}.` : "",
       !size ? "Container size was not found on the label." : "",
       state === "Unknown" ? "Physical state could not be inferred from label/catalogue." : "",
@@ -147,6 +273,7 @@ async function parseLabelText(text: string): Promise<{ item: DetectedChemical | 
       state,
       confidence,
       manufacturer,
+      catalogNumber,
       cas,
       un,
       source: reference ? "label" : "image",
@@ -173,6 +300,22 @@ function findChemical(text: string) {
   return best && best.score >= 5 ? best.reference : null;
 }
 
+function findLabProduct(text: string) {
+  let best: { reference: LabProductReference; score: number } | null = null;
+  for (const reference of labProductCatalog) {
+    for (const catalogNumber of reference.catalogNumbers) {
+      if (text.includes(catalogNumber.toLowerCase())) {
+        best = { reference, score: 100 };
+      }
+    }
+    for (const alias of reference.aliases) {
+      const score = text.includes(alias) ? alias.length + 20 : fuzzyTokenScore(text, alias);
+      if (score > (best?.score ?? 0)) best = { reference, score };
+    }
+  }
+  return best && best.score >= 8 ? best.reference : null;
+}
+
 function fuzzyTokenScore(text: string, alias: string) {
   const tokens = alias.split(/\s+/);
   const matched = tokens.filter((token) => token.length > 2 && text.includes(token)).join(" ");
@@ -196,8 +339,15 @@ function extractQuantity(text: string) {
   return 1;
 }
 
+function extractCatalogNumber(text: string) {
+  const explicit = text.match(/\b(?:cat|catalog|product|prod)\.?\s*(?:no|number|#)?\s*[:\-]?\s*([a-z]\d{3,6})\b/i);
+  if (explicit) return explicit[1].toUpperCase();
+  const sigmaLike = text.match(/\b([a-z]\d{4,6})\b/i);
+  return sigmaLike ? sigmaLike[1].toUpperCase() : null;
+}
+
 function inferStateFromWords(text: string): PhysicalState {
-  if (/\b(solution|liquid|solvent|acid|alcohol|aqueous)\b/.test(text)) return "Liquid";
+  if (/\b(solution|liquid|solvent|acid|alcohol|aqueous|serum|medium|media|culture tested|sterile filtered)\b/.test(text)) return "Liquid";
   if (/\b(powder|solid|crystal|pellets|granules|flakes)\b/.test(text)) return "Solid";
   if (/\b(gas|compressed)\b/.test(text)) return "Gas";
   return "Unknown";
@@ -228,6 +378,30 @@ function trimForWarning(text: string) {
 }
 
 function fallbackByBottleProfile(profile: VisionProfile, ocrText: string): { items: DetectedChemical[]; warnings: string[] } {
+  const normalized = normalizeText(ocrText);
+  const product = findLabProduct(normalized);
+  if (product) {
+    return {
+      warnings: [
+        "OCR was low confidence, but a lab product catalogue match was found from partial label text.",
+        "Verify product name, origin, catalogue number, and container size before finalisation.",
+      ],
+      items: [
+        detected({
+          name: product.name,
+          quantity: 1,
+          size: product.defaultSize?.value ?? null,
+          unit: product.defaultSize?.unit ?? null,
+          state: product.state,
+          confidence: 0.74,
+          manufacturer: product.manufacturer,
+          catalogNumber: extractCatalogNumber(normalized) ?? product.catalogNumbers[0],
+          source: "label",
+        }),
+      ],
+    };
+  }
+
   if (profile.estimatedBottleCount >= 3) {
     return {
       warnings: [
