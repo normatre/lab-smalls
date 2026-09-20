@@ -82,6 +82,7 @@ export const demoDrums: Drum[] = [
     notes: "Demo drum with review examples.",
     status: "Active",
     imagesScanned: 4,
+    scanImages: [],
     items: demoItems,
   },
   {
@@ -93,6 +94,7 @@ export const demoDrums: Drum[] = [
     date: "2026-09-18",
     status: "Completed",
     imagesScanned: 3,
+    scanImages: [],
     finalisedAt: "2026-09-18T14:45:00.000Z",
     items: [
       {

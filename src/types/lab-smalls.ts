@@ -39,6 +39,7 @@ export type Drum = {
   notes?: string;
   status: DrumStatus;
   imagesScanned: number;
+  scanImages?: string[];
   finalisedAt?: string;
   items: InventoryItem[];
 };

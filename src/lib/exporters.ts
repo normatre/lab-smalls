@@ -16,6 +16,19 @@ export function inventoryRows(drum: Drum) {
   }));
 }
 
+function summaryRows(drum: Drum) {
+  return [
+    ["Drum ID", drum.drumId],
+    ["Drum size", drum.size],
+    ["Operator", drum.operatorName],
+    ["Date", drum.date],
+    ["Status", drum.status],
+    ["Unique inventory lines", String(drum.items.length)],
+    ["Total containers", String(totalContainers(drum))],
+    ["Finalised at", drum.finalisedAt ? new Date(drum.finalisedAt).toLocaleString() : ""],
+  ];
+}
+
 export function downloadCsv(drum: Drum) {
   const rows = inventoryRows(drum);
   const headers = Object.keys(rows[0] ?? { Chemical: "", Quantity: "", "Container Size": "", "Physical State": "", CAS: "", "UN Number": "", Status: "" });
@@ -25,16 +38,22 @@ export function downloadCsv(drum: Drum) {
 
 export function downloadPdf(drum: Drum) {
   const doc = new jsPDF();
+  doc.setFillColor(4, 120, 87);
+  doc.rect(0, 0, 210, 22, "F");
+  doc.setTextColor(255, 255, 255);
   doc.setFontSize(16);
-  doc.text("LAB SMALLS INVENTORY", 14, 18);
+  doc.text("LAB SMALLS INVENTORY", 14, 14);
+  doc.setTextColor(15, 23, 42);
   doc.setFontSize(10);
-  doc.text(`Drum ID: ${drum.drumId}`, 14, 28);
-  doc.text(`Drum size: ${drum.size}`, 14, 34);
-  doc.text(`Operator: ${drum.operatorName}`, 14, 40);
-  doc.text(`Date: ${drum.date}`, 14, 46);
-  doc.text(`Number of containers: ${totalContainers(drum)}`, 14, 52);
+  doc.text(`Drum ID: ${drum.drumId}`, 14, 32);
+  doc.text(`Drum size: ${drum.size}`, 14, 38);
+  doc.text(`Operator: ${drum.operatorName}`, 14, 44);
+  doc.text(`Date: ${drum.date}`, 14, 50);
+  doc.text(`Number of containers: ${totalContainers(drum)}`, 14, 56);
   autoTable(doc, {
-    startY: 60,
+    startY: 66,
+    styles: { fontSize: 8, cellPadding: 2 },
+    headStyles: { fillColor: [4, 120, 87], textColor: 255 },
     head: [["Chemical", "Quantity", "Container Size", "Physical State", "CAS", "UN Number"]],
     body: drum.items.map((item) => [
       item.chemicalName.value ?? "",
@@ -46,6 +65,9 @@ export function downloadPdf(drum: Drum) {
     ]),
   });
   const y = (doc as jsPDF & { lastAutoTable?: { finalY: number } }).lastAutoTable?.finalY ?? 90;
+  doc.setFontSize(11);
+  doc.text("Operator confirmation", 14, y + 12);
+  doc.setFontSize(10);
   doc.text("Checked by:", 14, y + 18);
   doc.text("Signature:", 14, y + 30);
   doc.text("Date:", 14, y + 42);
@@ -54,7 +76,9 @@ export function downloadPdf(drum: Drum) {
 
 export function downloadXlsx(drum: Drum) {
   const wb = XLSX.utils.book_new();
+  const summary = XLSX.utils.aoa_to_sheet(summaryRows(drum));
   const ws = XLSX.utils.json_to_sheet(inventoryRows(drum));
+  XLSX.utils.book_append_sheet(wb, summary, "Summary");
   XLSX.utils.book_append_sheet(wb, ws, "Inventory");
   XLSX.writeFile(wb, `${drum.drumId}-inventory.xlsx`);
 }
