@@ -83,6 +83,7 @@ export const demoDrums: Drum[] = [
     status: "Active",
     imagesScanned: 4,
     scanImages: [],
+    scanWarnings: [],
     items: demoItems,
   },
   {
@@ -95,6 +96,7 @@ export const demoDrums: Drum[] = [
     status: "Completed",
     imagesScanned: 3,
     scanImages: [],
+    scanWarnings: [],
     finalisedAt: "2026-09-18T14:45:00.000Z",
     items: [
       {
@@ -128,6 +130,26 @@ export const demoProducts: Product[] = [
     unNumber: "UN1230",
     typicalContainerSize: 1,
     unit: "L",
+    physicalState: "Liquid",
+  },
+  {
+    id: "prod-sodium-hydroxide",
+    canonicalName: "Sodium Hydroxide",
+    manufacturer: "Merck / Sigma-Aldrich",
+    casNumber: "1310-73-2",
+    unNumber: "UN1823",
+    typicalContainerSize: 100,
+    unit: "g",
+    physicalState: "Solid",
+  },
+  {
+    id: "prod-hydrochloric-acid",
+    canonicalName: "Hydrochloric Acid",
+    manufacturer: "Merck / Sigma-Aldrich",
+    casNumber: "7647-01-0",
+    unNumber: "UN1789",
+    typicalContainerSize: 500,
+    unit: "mL",
     physicalState: "Liquid",
   },
 ];

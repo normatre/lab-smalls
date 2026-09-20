@@ -40,6 +40,7 @@ export type Drum = {
   status: DrumStatus;
   imagesScanned: number;
   scanImages?: string[];
+  scanWarnings?: string[];
   finalisedAt?: string;
   items: InventoryItem[];
 };
