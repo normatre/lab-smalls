@@ -120,8 +120,8 @@ const detected = ({
 export class MockChemicalVisionService implements ChemicalVisionService {
   async analyzeChemicalImage(image: File | Blob, options?: { openAiApiKey?: string }): Promise<{ items: DetectedChemical[]; warnings: string[] }> {
     await new Promise((resolve) => setTimeout(resolve, 350));
-    if (options?.openAiApiKey && image.size > 0) {
-      const aiResult = await analyzeWithOpenAIVision(image, options.openAiApiKey);
+    if (image.size > 0) {
+      const aiResult = await analyzeWithOpenAIVision(image, options?.openAiApiKey);
       if (aiResult.items.length > 0) return aiResult;
     }
     const [profile, ocr] = await Promise.all([profileImage(image), readLabelText(image)]);
@@ -155,33 +155,11 @@ type VisionExtract = {
   confidence?: number | null;
 };
 
-async function analyzeWithOpenAIVision(image: File | Blob, apiKey: string): Promise<{ items: DetectedChemical[]; warnings: string[] }> {
+async function analyzeWithOpenAIVision(image: File | Blob, apiKey?: string): Promise<{ items: DetectedChemical[]; warnings: string[] }> {
   try {
     const imageUrl = await blobToDataUrl(image);
-    const response = await fetch("https://api.openai.com/v1/responses", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "gpt-4.1-mini",
-        input: [
-          {
-            role: "user",
-            content: [
-              {
-                type: "input_text",
-                text: "Read this lab chemical container label. Extract the real chemical/product name, not grade/quality text such as ACS reagent, reagent grade, powder, 99+%, certified, for analysis, lot, expiry, or hazard text. Return only compact JSON with keys: chemicalName, quantity, containerSize, unit, physicalState, manufacturer, catalogNumber, casNumber, unNumber, grade, confidence. unit must be one of g, kg, mL, L. physicalState must be Solid, Liquid, Gas, or Unknown.",
-              },
-              { type: "input_image", image_url: imageUrl },
-            ],
-          },
-        ],
-      }),
-    });
-    if (!response.ok) return { items: [], warnings: ["OpenAI Vision OCR could not process the image. Tesseract fallback was used."] };
-    const data = await response.json();
+    const data = await requestVisionExtraction(imageUrl, apiKey);
+    if (!data) return { items: [], warnings: ["OpenAI Vision OCR is not configured yet. Tesseract fallback was used."] };
     const outputText = extractOpenAIOutputText(data);
     const extracted = parseVisionJson(outputText);
     if (!extracted?.chemicalName) return { items: [], warnings: ["OpenAI Vision OCR did not find a chemical name. Tesseract fallback was used."] };
@@ -215,6 +193,49 @@ async function analyzeWithOpenAIVision(image: File | Blob, apiKey: string): Prom
     };
   } catch {
     return { items: [], warnings: ["OpenAI Vision OCR failed. Tesseract fallback was used."] };
+  }
+}
+
+async function requestVisionExtraction(imageUrl: string, apiKey?: string): Promise<unknown | null> {
+  const proxied = await fetchVisionProxy(imageUrl);
+  if (proxied) return proxied;
+  if (!apiKey) return null;
+  const response = await fetch("https://api.openai.com/v1/responses", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "gpt-4.1-mini",
+        input: [
+          {
+            role: "user",
+            content: [
+              {
+                type: "input_text",
+                text: "Read this lab chemical container label. Extract the real chemical/product name, not grade/quality text such as ACS reagent, reagent grade, powder, 99+%, certified, for analysis, lot, expiry, or hazard text. Return only compact JSON with keys: chemicalName, quantity, containerSize, unit, physicalState, manufacturer, catalogNumber, casNumber, unNumber, grade, confidence. unit must be one of g, kg, mL, L. physicalState must be Solid, Liquid, Gas, or Unknown.",
+              },
+              { type: "input_image", image_url: imageUrl },
+            ],
+          },
+        ],
+      }),
+    });
+  return response.ok ? response.json() : null;
+}
+
+async function fetchVisionProxy(imageUrl: string): Promise<unknown | null> {
+  try {
+    const response = await fetch("/api/openai-vision", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ image: imageUrl }),
+    });
+    if (!response.ok) return null;
+    return response.json();
+  } catch {
+    return null;
   }
 }
 
