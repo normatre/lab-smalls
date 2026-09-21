@@ -110,10 +110,6 @@ const detected = ({
   containerSize: sourced(size, size ? Math.min(0.92, confidence + 0.05) : 0.35, size ? "label" : "image"),
   unit: sourced(unit, unit ? Math.min(0.94, confidence + 0.06) : 0.35, unit ? "label" : "image"),
   physicalState: sourced(state, state === "Unknown" ? 0.3 : 0.86, state === "Unknown" ? "image" : "database"),
-  manufacturer,
-  catalogNumber,
-  casNumber: cas,
-  unNumber: un,
   confidence,
   sourceImage: "ocr-upload",
 });
@@ -148,11 +144,8 @@ type VisionExtract = {
   containerSize?: number | null;
   unit?: Unit | null;
   physicalState?: PhysicalState | null;
-  manufacturer?: string | null;
-  catalogNumber?: string | null;
+  physicalStateEvidence?: "label" | "product-name" | "inferred" | "none" | null;
   casNumber?: string | null;
-  unNumber?: string | null;
-  grade?: string | null;
   confidence?: number | null;
 };
 
@@ -165,16 +158,20 @@ async function analyzeWithOpenAIVision(image: File | Blob, apiKey?: string): Pro
     const extracted = parseVisionJson(outputText);
     if (!extracted?.chemicalName) return { items: [], warnings: ["OpenAI Vision OCR did not find a chemical name. Tesseract fallback was used."] };
 
-    const pubChem = await lookupChemicalEverywhere(extracted.chemicalName);
-    const name = pubChem?.name ?? cleanChemicalNameCandidate(extracted.chemicalName);
-    const state = normalizeState(extracted.physicalState) ?? pubChem?.physicalState ?? "Unknown";
+    const statedState = extracted.physicalStateEvidence === "label" || extracted.physicalStateEvidence === "product-name"
+      ? normalizeState(extracted.physicalState)
+      : null;
+    const pubChem = await lookupChemicalEverywhere(extracted.chemicalName, extracted.casNumber, statedState);
+    const confidentMatch = pubChem && pubChem.confidence >= 0.86 && !pubChem.reviewRequired ? pubChem : null;
+    const name = confidentMatch?.name ?? cleanChemicalNameCandidate(extracted.chemicalName);
+    const state = statedState ?? pubChem?.physicalState ?? "Unknown";
     const unit = normalizeUnit(extracted.unit);
-    const confidence = Math.max(0.55, Math.min(0.98, extracted.confidence ?? 0.86));
+    const confidence = Math.max(0.45, Math.min(0.98, Math.min(extracted.confidence ?? 0.8, pubChem?.confidence ?? 0.8)));
 
     return {
       warnings: [
-        "OpenAI Vision OCR used for label reading. Operator confirmation is still required.",
-        pubChem ? `Matched ${pubChem.source ?? "chemical database"}${pubChem.cid > 0 ? ` CID ${pubChem.cid}` : ""}${pubChem.iupacName ? ` (${pubChem.iupacName})` : ""}.` : "No external database match was found for the extracted name.",
+        "The prominent label name was read first. Operator confirmation is still required.",
+        confidentMatch ? `Identity validated with ${confidentMatch.source}.` : "No sufficiently confident database match was found; the label name was preserved for manual review.",
       ],
       items: [
         detected({
@@ -184,10 +181,6 @@ async function analyzeWithOpenAIVision(image: File | Blob, apiKey?: string): Pro
           unit,
           state,
           confidence,
-          manufacturer: extracted.manufacturer ?? pubChem?.source,
-          catalogNumber: extracted.catalogNumber ?? (pubChem?.cid && pubChem.cid > 0 ? `PubChem CID ${pubChem.cid}` : null),
-          cas: extracted.casNumber ?? pubChem?.casNumber ?? null,
-          un: extracted.unNumber ?? null,
           source: "database",
         }),
       ],
@@ -215,7 +208,7 @@ async function requestVisionExtraction(imageUrl: string, apiKey?: string): Promi
             content: [
               {
                 type: "input_text",
-                text: "Read this lab chemical container label. Extract the exact real chemical/product name, not grade/quality text such as ACS reagent, ReagentPlus, reagent grade, powder, 99+%, certified, for analysis, lot, expiry, or hazard text. Preserve full numbered names and salts exactly, for example Sodium 1-dodecanesulfonate must not be simplified to Sodium hydroxide or Sodium chloride. Return only compact JSON with keys: chemicalName, quantity, containerSize, unit, physicalState, manufacturer, catalogNumber, casNumber, unNumber, grade, confidence. unit must be one of g, kg, mL, L. physicalState must be Solid, Liquid, Gas, or Unknown.",
+                text: "Read this lab chemical container label. The chemical/product name is normally the largest bold black name in the main label area. Read that exact prominent name first, for example Hexamethyldisiloxane. Ignore brand names, catalogue and lot numbers, purity/grade text, smaller translations, hazard text and pictograms. Preserve full numbered names, salts, buffer names and commercial reagent names exactly. Never convert Buffer Solution pH 7 or Karl Fischer Reagent into one pure chemical unless the label explicitly names it. Return only compact JSON with keys: chemicalName, quantity, containerSize, unit, physicalState, physicalStateEvidence, casNumber, confidence. physicalStateEvidence must be label, product-name, inferred, or none. unit must be one of g, kg, mL, L. physicalState must be Solid, Liquid, Gas, or Unknown. Use Unknown rather than guessing.",
               },
               { type: "input_image", image_url: imageUrl },
             ],
@@ -373,14 +366,12 @@ async function parseLabelText(text: string): Promise<{ item: DetectedChemical | 
   const pubChem = await lookupPubChemFromText(text);
   const size = extractSize(normalized) ?? labProduct?.defaultSize ?? null;
   const quantity = extractQuantity(normalized);
-  const state = labProduct?.state ?? pubChem?.physicalState ?? reference?.state ?? inferStateFromWords(normalized);
-  const cas = extractCas(normalized) ?? pubChem?.casNumber ?? reference?.cas ?? null;
-  const un = extractUn(normalized) ?? reference?.un ?? null;
-  const manufacturer = labProduct?.manufacturer ?? inferManufacturer(normalized) ?? pubChem?.source;
+  const explicitState = inferStateFromWords(normalized);
+  const state = labProduct?.state ?? (explicitState !== "Unknown" ? explicitState : pubChem?.physicalState ?? reference?.state ?? "Unknown");
   const catalogNumber = extractCatalogNumber(normalized) ?? labProduct?.catalogNumbers[0] ?? (pubChem?.cid && pubChem.cid > 0 ? `PubChem CID ${pubChem.cid}` : null);
   const labelName = extractLikelyLabelName(text);
   const usableReference = reference && !namesConflict(labelName, reference.name) ? reference : null;
-  const usableDatabase = pubChem && !namesConflict(labelName, pubChem.name) ? pubChem : null;
+  const usableDatabase = pubChem && pubChem.confidence >= 0.86 && !pubChem.reviewRequired && !namesConflict(labelName, pubChem.name) ? pubChem : null;
   const name = labProduct?.name ?? usableDatabase?.name ?? usableReference?.name ?? labelName;
   const confidence = scoreExtraction(Boolean(name), Boolean(size), Boolean(quantity), state !== "Unknown", Boolean(pubChem) || Boolean(labProduct));
 
@@ -392,7 +383,7 @@ async function parseLabelText(text: string): Promise<{ item: DetectedChemical | 
     warnings: [
       !reference && !pubChem && !labProduct ? "Chemical/product name was not matched to the built-in catalogues or external databases." : "",
       labProduct ? `Matched lab product catalogue${catalogNumber ? ` (${catalogNumber})` : ""}.` : "",
-      usableDatabase ? `Matched ${usableDatabase.source ?? "chemical database"}${usableDatabase.cid > 0 ? ` CID ${usableDatabase.cid}` : ""}${usableDatabase.iupacName ? ` (${usableDatabase.iupacName})` : ""}.` : "",
+      usableDatabase ? `Identity validated with ${usableDatabase.source}.` : "",
       pubChem && !usableDatabase ? `Rejected conflicting database match (${pubChem.name}) because the label name looked more specific.` : "",
       !size ? "Container size was not found on the label." : "",
       state === "Unknown" ? "Physical state could not be inferred from label/catalogue." : "",
@@ -404,10 +395,6 @@ async function parseLabelText(text: string): Promise<{ item: DetectedChemical | 
       unit: size?.unit ?? null,
       state,
       confidence,
-      manufacturer,
-      catalogNumber,
-      cas,
-      un,
       source: usableDatabase || usableReference ? "database" : "image",
     }),
   };
@@ -513,12 +500,13 @@ function isLabelNoise(line: string) {
 function scoreLabelName(line: string) {
   const lower = line.toLowerCase();
   let score = 0;
-  if (/\b(acid|alcohol|acetone|methanol|ethanol|hydroxide|chloride|sulfate|sulphate|sulfonate|sulphonate|dodecane|dodecyl|nitrate|carbonate|phosphate|oxide|peroxide|serum|buffer|medium|solution)\b/.test(lower)) score += 40;
+  if (/\b(acid|alcohol|acetone|methanol|ethanol|hydroxide|chloride|sulfate|sulphate|sulfonate|sulphonate|siloxane|silane|dodecane|dodecyl|nitrate|carbonate|phosphate|oxide|peroxide|serum|buffer|medium|solution)\b/.test(lower)) score += 40;
   const words = line.split(/\s+/).filter(Boolean);
   if (words.length >= 2 && words.length <= 6) score += 24;
   if (/\b\d+-[a-z]/i.test(line)) score += 26;
   if (line === line.toUpperCase()) score += 12;
   if (/[a-zA-Z]{5,}/.test(line)) score += 12;
+  if (/^[a-zA-Z][a-zA-Z-]{11,}$/.test(line)) score += 28;
   if (/[0-9]/.test(line)) score -= 20;
   if (/\b(?:reagent|grade|powder|acs|a\.?\s*c\.?\s*s\.?|puriss?|certified)\b/i.test(line)) score -= 45;
   return score;
@@ -581,7 +569,7 @@ function normalizeState(value: unknown): PhysicalState | null {
 }
 
 function inferStateFromWords(text: string): PhysicalState {
-  if (/\b(solution|liquid|solvent|acid|alcohol|aqueous|serum|medium|media|culture tested|sterile filtered)\b/.test(text)) return "Liquid";
+  if (/\b(solution|liquid|aqueous|suspension|emulsion|serum|medium|media|culture tested|sterile filtered)\b/.test(text)) return "Liquid";
   if (/\b(powder|solid|crystal|pellets|granules|flakes)\b/.test(text)) return "Solid";
   if (/\b(gas|compressed)\b/.test(text)) return "Gas";
   return "Unknown";

@@ -10,8 +10,6 @@ export function inventoryRows(drum: Drum) {
     Quantity: item.quantity.value ?? "",
     "Container Size": `${item.containerSize.value ?? ""} ${item.unit.value ?? ""}`.trim(),
     "Physical State": item.physicalState.value ?? "",
-    CAS: item.casNumber ?? "",
-    "UN Number": item.unNumber ?? "",
     Status: item.status,
   }));
 }
@@ -31,7 +29,7 @@ function summaryRows(drum: Drum) {
 
 export function downloadCsv(drum: Drum) {
   const rows = inventoryRows(drum);
-  const headers = Object.keys(rows[0] ?? { Chemical: "", Quantity: "", "Container Size": "", "Physical State": "", CAS: "", "UN Number": "", Status: "" });
+  const headers = Object.keys(rows[0] ?? { Chemical: "", Quantity: "", "Container Size": "", "Physical State": "", Status: "" });
   const csv = [headers.join(","), ...rows.map((row) => headers.map((header) => JSON.stringify(String(row[header as keyof typeof row] ?? ""))).join(","))].join("\n");
   downloadBlob(new Blob([csv], { type: "text/csv;charset=utf-8" }), `${drum.drumId}-inventory.csv`);
 }
@@ -54,14 +52,12 @@ export function downloadPdf(drum: Drum) {
     startY: 66,
     styles: { fontSize: 8, cellPadding: 2 },
     headStyles: { fillColor: [4, 120, 87], textColor: 255 },
-    head: [["Chemical", "Quantity", "Container Size", "Physical State", "CAS", "UN Number"]],
+    head: [["Chemical", "Quantity", "Container Size", "Physical State"]],
     body: drum.items.map((item) => [
       item.chemicalName.value ?? "",
       item.quantity.value ?? "",
       `${item.containerSize.value ?? ""} ${item.unit.value ?? ""}`.trim(),
       item.physicalState.value ?? "",
-      item.casNumber ?? "",
-      item.unNumber ?? "",
     ]),
   });
   const y = (doc as jsPDF & { lastAutoTable?: { finalY: number } }).lastAutoTable?.finalY ?? 90;
