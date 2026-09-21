@@ -49,6 +49,7 @@ const chemicalCatalog: ChemicalReference[] = [
   { name: "Bromotrimethylsilane", aliases: ["bromotrimethylsilane", "trimethylsilyl bromide", "tmbs"], state: "Liquid", cas: "2857-97-8", catalogNumbers: ["92337"] },
   { name: "Chlorotrimethylsilane", aliases: ["chlorotrimethylsilane", "trimethylsilyl chloride", "tmcs"], state: "Liquid", cas: "75-77-4", catalogNumbers: ["89595"] },
   { name: "tert-Butyldimethylsilyl chloride", aliases: ["tert-butyldimethylsilyl chloride", "t-butyldimethylsilyl chloride", "tbdms chloride", "tbscl"], state: "Solid", cas: "18162-48-6", catalogNumbers: ["190500", "199500"] },
+  { name: "Boron Trifluoride Methanol Solution", aliases: ["boron trifluoride methanol solution", "boron trifluoride-methanol solution", "boron trifluoride in methanol", "bf3 methanol solution", "bf3 in methanol"], state: "Liquid", catalogNumbers: ["B1252"] },
 ];
 
 const labProductCatalog: LabProductReference[] = [
@@ -227,7 +228,7 @@ async function requestVisionExtraction(imageUrl: string, apiKey?: string): Promi
             content: [
               {
                 type: "input_text",
-                text: "Read this lab chemical container label. First locate the manufacturer banner, then read the first large bold black product-name line immediately below or beside the catalogue/pack code. That exact English product line is chemicalName. Never use the manufacturer (such as Sigma-Aldrich, Merck), a translated synonym below the main name, or a shortened fragment such as Silyl Chloride. Also read the catalogue number separately; for a code such as 92337-5ML return catalogNumber 92337, quantity 1, containerSize 5, unit mL, while 89595-10X1ML means catalogNumber 89595, quantity 10, containerSize 1, unit mL. Ignore lot, purity/grade, hazard text and pictograms. Preserve commercial reagent names. Return only compact JSON with keys: chemicalName, catalogNumber, quantity, containerSize, unit, physicalState, physicalStateEvidence, casNumber, confidence. physicalStateEvidence must be label, product-name, inferred, or none. unit must be g, kg, mL, or L. physicalState must be Solid, Liquid, Gas, or Unknown. Use Unknown rather than guessing.",
+                text: "Read this lab chemical container label. First locate the manufacturer banner, then read the first large bold black product-name line immediately below or beside the catalogue/pack code. That exact English product line is chemicalName. Never use the manufacturer (such as Sigma-Aldrich, Merck), a translated synonym below the main name, a solvent-only fragment such as Methanol Solution, or a shortened fragment such as Silyl Chloride. If the label says Boron trifluoride-methanol solution or Boron trifluoride in methanol, chemicalName must be Boron Trifluoride Methanol Solution, not Methanol Solution. Also read the catalogue number separately; for a code such as 92337-5ML return catalogNumber 92337, quantity 1, containerSize 5, unit mL, while 89595-10X1ML means catalogNumber 89595, quantity 10, containerSize 1, unit mL. Ignore lot, purity/grade, hazard text and pictograms. Preserve commercial reagent names. Return only compact JSON with keys: chemicalName, catalogNumber, quantity, containerSize, unit, physicalState, physicalStateEvidence, casNumber, confidence. physicalStateEvidence must be label, product-name, inferred, or none. unit must be g, kg, mL, or L. physicalState must be Solid, Liquid, Gas, or Unknown. Use Unknown rather than guessing.",
               },
               { type: "input_image", image_url: imageUrl },
             ],
@@ -455,6 +456,8 @@ function cleanOcrOutput(text?: string) {
 
 function normalizeText(text: string) {
   return text
+    .replace(/\bsolutiol\b/gi, "solution")
+    .replace(/\btrifiuoride\b/gi, "trifluoride")
     .replace(/[|()[\]{}]/g, " ")
     .replace(/\s+/g, " ")
     .trim()
@@ -541,9 +544,15 @@ function extractCatalogNumber(text: string) {
 }
 
 function extractLikelyLabelName(text: string) {
-  const candidates = text
+  const lines = text
     .split(/\r?\n/)
     .map((line) => line.replace(/[|()[\]{}]/g, " ").replace(/[^a-zA-Z0-9+,\-.\s]/g, " ").replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+  const candidates = [
+    ...lines,
+    ...lines.slice(0, -1).map((line, index) => `${line} ${lines[index + 1]}`),
+    ...lines.slice(0, -2).map((line, index) => `${line} ${lines[index + 1]} ${lines[index + 2]}`),
+  ]
     .flatMap((line) => [line, ...line.split(/[,;]/)])
     .map(cleanChemicalNameCandidate)
     .filter((line) => line.length >= 5 && line.length <= 64)
@@ -554,6 +563,9 @@ function extractLikelyLabelName(text: string) {
 
 function cleanChemicalNameCandidate(line: string) {
   return line
+    .replace(/\bsolutiol\b/gi, "solution")
+    .replace(/\btrifiuoride\b/gi, "trifluoride")
+    .replace(/\btrifluoride\s*-\s*methanol\b/gi, "trifluoride methanol")
     .replace(/\b(?:a\.?\s*c\.?\s*s\.?|acs|reagent|grade|powder|crystalline|granular|pellets?|flakes?|anhydrous|hydrate|for\s+analysis|extra\s+pure|certified|puriss?|bio\s*reagent)\b.*$/i, " ")
     .replace(/\b\d+(?:[.,]\d+)?\s*%.*$/i, " ")
     .replace(/\b\d+(?:[.,]\d+)?\s*(?:kg|g|ml|l)\b/gi, " ")
@@ -566,6 +578,7 @@ function isLabelNoise(line: string) {
   const lower = line.toLowerCase();
   if (/^(?:a\.?\s*c\.?\s*s\.?|acs)?\s*(?:reagent|grade|powder|crystalline|granular|pellets?|flakes?|anhydrous|hydrate)\s*$/i.test(line)) return true;
   if (/\b(?:lot|batch|exp|expiry|cat|catalog|product|prod|store|storage|temperature|information|warning|danger|only|sigma|aldrich|merck|millipore|fisher)\b/.test(lower)) return true;
+  if (/^methanol solution$/i.test(line)) return true;
   if (/\b\d+(?:[.,]\d+)?\s*(?:kg|g|ml|l)\b/i.test(lower) && !/\b(?:solution|acid|alcohol|serum|medium|buffer)\b/i.test(lower)) return true;
   if (/^\W*\d/.test(line) && !/\b(?:acid|alcohol|serum|medium|buffer|solution)\b/i.test(line)) return true;
   return false;
@@ -575,6 +588,10 @@ function scoreLabelName(line: string) {
   const lower = line.toLowerCase();
   let score = 0;
   if (/\b(acid|alcohol|acetone|methanol|ethanol|hydroxide|chloride|sulfate|sulphate|sulfonate|sulphonate|siloxane|silane|dodecane|dodecyl|nitrate|carbonate|phosphate|oxide|peroxide|serum|buffer|medium|solution)\b/.test(lower)) score += 40;
+  if (/\bboron\b/.test(lower)) score += 35;
+  if (/\btrifluoride\b/.test(lower)) score += 35;
+  if (/\bboron\b/.test(lower) && /\btrifluoride\b/.test(lower) && /\bmethanol\b/.test(lower)) score += 80;
+  if (/^methanol solution$/i.test(line)) score -= 90;
   const words = line.split(/\s+/).filter(Boolean);
   if (words.length >= 2 && words.length <= 6) score += 24;
   if (/\b\d+-[a-z]/i.test(line)) score += 26;
