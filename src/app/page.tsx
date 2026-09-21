@@ -193,8 +193,8 @@ function CameraScanner({ drum, onUpdate, openAiApiKey }: { drum: Drum; onUpdate:
 async function prepareCameraImage(file: File) {
   const source = await loadImageSource(file);
   try {
-    const analysisImage = await renderCompressedImage(source, 1600, 0.82);
-    const previewImage = await renderCompressedImage(source, 480, 0.68);
+    const analysisImage = file;
+    const previewImage = await renderCompressedImage(source, 1400, 0.86);
     const preview = await fileToDataUrl(previewImage);
     return { analysisImage, preview };
   } finally {
