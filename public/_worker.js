@@ -1,5 +1,5 @@
 const visionPrompt =
-  "Read this lab chemical container label. The chemical/product name is normally the largest bold black name in the main label area. Read that exact prominent name first (for example Hexamethyldisiloxane). Ignore brand names, catalogue numbers, lot numbers, purity/grade text, translations printed in smaller type, hazard text and pictograms. Preserve full numbered names, salts, buffer names and commercial reagent names exactly. Never turn a product such as Buffer Solution pH 7 or Karl Fischer Reagent into one pure chemical unless the label explicitly names that substance. Return only compact JSON with keys: chemicalName, quantity, containerSize, unit, physicalState, physicalStateEvidence, casNumber, confidence. physicalStateEvidence must be label, product-name, inferred, or none. unit must be one of g, kg, mL, L. physicalState must be Solid, Liquid, Gas, or Unknown. Use Unknown rather than guessing.";
+  "Read this lab chemical container label. First locate the manufacturer banner, then read the first large bold black product-name line immediately below or beside the catalogue/pack code. That exact English product line is chemicalName. Never use the manufacturer (such as Sigma-Aldrich or Merck), a translated synonym below the main name, or a shortened fragment such as Silyl Chloride. Read the catalogue number separately: for 92337-5ML return catalogNumber 92337, quantity 1, containerSize 5, unit mL; for 89595-10X1ML return catalogNumber 89595, quantity 10, containerSize 1, unit mL. Ignore lot, purity/grade, hazard text and pictograms. Preserve full numbered names, salts, buffer names and commercial reagent names exactly. Return only compact JSON with keys: chemicalName, catalogNumber, quantity, containerSize, unit, physicalState, physicalStateEvidence, casNumber, confidence. physicalStateEvidence must be label, product-name, inferred, or none. unit must be g, kg, mL, or L. physicalState must be Solid, Liquid, Gas, or Unknown. Use Unknown rather than guessing.";
 
 const worker = {
   async fetch(request, env) {
@@ -29,7 +29,7 @@ async function handleVisionRequest(request, env) {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: "gpt-4.1-mini",
+        model: "gpt-4.1",
         input: [
           {
             role: "user",

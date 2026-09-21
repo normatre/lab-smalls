@@ -13,6 +13,7 @@ type ChemicalReference = {
   state: PhysicalState;
   cas?: string;
   un?: string;
+  catalogNumbers?: string[];
 };
 type LabProductReference = {
   name: string;
@@ -44,10 +45,10 @@ const chemicalCatalog: ChemicalReference[] = [
   { name: "Hydrogen Peroxide", aliases: ["hydrogen peroxide", "h2o2"], state: "Liquid", cas: "7722-84-1", un: "UN2014" },
   { name: "Formaldehyde Solution", aliases: ["formaldehyde", "formalin"], state: "Liquid", cas: "50-00-0", un: "UN1198" },
   { name: "Phenol", aliases: ["phenol", "carbolic acid"], state: "Solid", cas: "108-95-2", un: "UN1671" },
-  { name: "Hexamethyldisiloxane", aliases: ["hexamethyldisiloxane", "hmdso"], state: "Liquid", cas: "107-46-0" },
-  { name: "Bromotrimethylsilane", aliases: ["bromotrimethylsilane", "trimethylsilyl bromide", "tmbs"], state: "Liquid", cas: "2857-97-8" },
-  { name: "Chlorotrimethylsilane", aliases: ["chlorotrimethylsilane", "trimethylsilyl chloride", "tmcs"], state: "Liquid", cas: "75-77-4" },
-  { name: "tert-Butyldimethylsilyl chloride", aliases: ["tert-butyldimethylsilyl chloride", "t-butyldimethylsilyl chloride", "tbdms chloride", "tbscl"], state: "Solid", cas: "18162-48-6" },
+  { name: "Hexamethyldisiloxane", aliases: ["hexamethyldisiloxane", "hmdso"], state: "Liquid", cas: "107-46-0", catalogNumbers: ["52630"] },
+  { name: "Bromotrimethylsilane", aliases: ["bromotrimethylsilane", "trimethylsilyl bromide", "tmbs"], state: "Liquid", cas: "2857-97-8", catalogNumbers: ["92337"] },
+  { name: "Chlorotrimethylsilane", aliases: ["chlorotrimethylsilane", "trimethylsilyl chloride", "tmcs"], state: "Liquid", cas: "75-77-4", catalogNumbers: ["89595"] },
+  { name: "tert-Butyldimethylsilyl chloride", aliases: ["tert-butyldimethylsilyl chloride", "t-butyldimethylsilyl chloride", "tbdms chloride", "tbscl"], state: "Solid", cas: "18162-48-6", catalogNumbers: ["190500", "199500"] },
 ];
 
 const labProductCatalog: LabProductReference[] = [
@@ -158,6 +159,7 @@ type VisionExtract = {
   physicalState?: PhysicalState | null;
   physicalStateEvidence?: "label" | "product-name" | "inferred" | "none" | null;
   casNumber?: string | null;
+  catalogNumber?: string | null;
   confidence?: number | null;
 };
 
@@ -173,17 +175,18 @@ async function analyzeWithOpenAIVision(image: File | Blob, apiKey?: string): Pro
     const statedState = extracted.physicalStateEvidence === "label" || extracted.physicalStateEvidence === "product-name"
       ? normalizeState(extracted.physicalState)
       : null;
-    const pubChem = await lookupChemicalEverywhere(extracted.chemicalName, extracted.casNumber, statedState);
+    const catalogReference = findChemicalByCatalog(extracted.catalogNumber ?? "");
+    const pubChem = await lookupChemicalEverywhere(catalogReference?.name ?? extracted.chemicalName, extracted.casNumber ?? catalogReference?.cas, statedState);
     const confidentMatch = pubChem && pubChem.confidence >= 0.86 && !pubChem.reviewRequired ? pubChem : null;
-    const name = confidentMatch?.name ?? cleanChemicalNameCandidate(extracted.chemicalName);
-    const state = statedState ?? pubChem?.physicalState ?? "Unknown";
+    const name = catalogReference?.name ?? confidentMatch?.name ?? cleanChemicalNameCandidate(extracted.chemicalName);
+    const state = statedState ?? catalogReference?.state ?? pubChem?.physicalState ?? "Unknown";
     const unit = normalizeUnit(extracted.unit);
     const confidence = Math.max(0.45, Math.min(0.98, Math.min(extracted.confidence ?? 0.8, pubChem?.confidence ?? 0.8)));
 
     return {
       warnings: [
         "The prominent label name was read first. Operator confirmation is still required.",
-        confidentMatch ? `Identity validated with ${confidentMatch.source}.` : "No sufficiently confident database match was found; the label name was preserved for manual review.",
+        catalogReference ? `Identity validated from product catalogue ${extracted.catalogNumber}.` : confidentMatch ? `Identity validated with ${confidentMatch.source}.` : "No sufficiently confident database match was found; the label name was preserved for manual review.",
       ],
       items: [
         detected({
@@ -220,7 +223,7 @@ async function requestVisionExtraction(imageUrl: string, apiKey?: string): Promi
             content: [
               {
                 type: "input_text",
-                text: "Read this lab chemical container label. The chemical/product name is normally the largest bold black name in the main label area. Read that exact prominent name first, for example Hexamethyldisiloxane. Ignore brand names, catalogue and lot numbers, purity/grade text, smaller translations, hazard text and pictograms. Preserve full numbered names, salts, buffer names and commercial reagent names exactly. Never convert Buffer Solution pH 7 or Karl Fischer Reagent into one pure chemical unless the label explicitly names it. Return only compact JSON with keys: chemicalName, quantity, containerSize, unit, physicalState, physicalStateEvidence, casNumber, confidence. physicalStateEvidence must be label, product-name, inferred, or none. unit must be one of g, kg, mL, L. physicalState must be Solid, Liquid, Gas, or Unknown. Use Unknown rather than guessing.",
+                text: "Read this lab chemical container label. First locate the manufacturer banner, then read the first large bold black product-name line immediately below or beside the catalogue/pack code. That exact English product line is chemicalName. Never use the manufacturer (such as Sigma-Aldrich, Merck), a translated synonym below the main name, or a shortened fragment such as Silyl Chloride. Also read the catalogue number separately; for a code such as 92337-5ML return catalogNumber 92337, quantity 1, containerSize 5, unit mL, while 89595-10X1ML means catalogNumber 89595, quantity 10, containerSize 1, unit mL. Ignore lot, purity/grade, hazard text and pictograms. Preserve commercial reagent names. Return only compact JSON with keys: chemicalName, catalogNumber, quantity, containerSize, unit, physicalState, physicalStateEvidence, casNumber, confidence. physicalStateEvidence must be label, product-name, inferred, or none. unit must be g, kg, mL, or L. physicalState must be Solid, Liquid, Gas, or Unknown. Use Unknown rather than guessing.",
               },
               { type: "input_image", image_url: imageUrl },
             ],
@@ -399,15 +402,18 @@ async function parseLabelText(text: string): Promise<{ item: DetectedChemical | 
   if (normalized.length < 8) return { item: null, warnings: ["No reliable label text was read. Try a closer, sharper photo of the label."] };
 
   const labProduct = findLabProduct(normalized);
-  const reference = findChemical(normalized);
-  const pubChem = await lookupPubChemFromText(text);
+  const catalogReference = findChemicalByCatalog(normalized);
+  const reference = catalogReference ?? findChemical(normalized);
+  const pubChem = catalogReference
+    ? await lookupChemicalEverywhere(catalogReference.name, catalogReference.cas)
+    : await lookupPubChemFromText(text);
   const size = extractSize(normalized) ?? labProduct?.defaultSize ?? null;
   const quantity = extractQuantity(normalized);
   const explicitState = inferStateFromWords(normalized);
   const state = labProduct?.state ?? (explicitState !== "Unknown" ? explicitState : pubChem?.physicalState ?? reference?.state ?? "Unknown");
   const catalogNumber = extractCatalogNumber(normalized) ?? labProduct?.catalogNumbers[0] ?? (pubChem?.cid && pubChem.cid > 0 ? `PubChem CID ${pubChem.cid}` : null);
   const labelName = extractLikelyLabelName(text);
-  const usableReference = reference && !namesConflict(labelName, reference.name) ? reference : null;
+  const usableReference = reference && (catalogReference === reference || !namesConflict(labelName, reference.name)) ? reference : null;
   const usableDatabase = pubChem && pubChem.confidence >= 0.86 && !pubChem.reviewRequired && !namesConflict(labelName, pubChem.name) ? pubChem : null;
   const name = labProduct?.name ?? usableDatabase?.name ?? usableReference?.name ?? labelName;
   const confidence = scoreExtraction(Boolean(name), Boolean(size), Boolean(quantity), state !== "Unknown", Boolean(pubChem) || Boolean(labProduct));
@@ -420,7 +426,7 @@ async function parseLabelText(text: string): Promise<{ item: DetectedChemical | 
     warnings: [
       !reference && !pubChem && !labProduct ? "Chemical/product name was not matched to the built-in catalogues or external databases." : "",
       labProduct ? `Matched lab product catalogue${catalogNumber ? ` (${catalogNumber})` : ""}.` : "",
-      usableDatabase ? `Identity validated with ${usableDatabase.source}.` : usableReference ? "Identity validated with the local chemical reference cache." : "",
+      usableDatabase ? `Identity validated with ${usableDatabase.source}.` : catalogReference ? "Identity validated from the product catalogue number." : usableReference ? "Identity validated with the local chemical reference cache." : "",
       pubChem && !usableDatabase ? `Rejected conflicting database match (${pubChem.name}) because the label name looked more specific.` : "",
       !size ? "Container size was not found on the label." : "",
       state === "Unknown" ? "Physical state could not be inferred from label/catalogue." : "",
@@ -446,6 +452,8 @@ function normalizeText(text: string) {
 }
 
 function findChemical(text: string) {
+  const catalogReference = findChemicalByCatalog(text);
+  if (catalogReference) return catalogReference;
   let best: { reference: ChemicalReference; score: number } | null = null;
   for (const reference of chemicalCatalog) {
     for (const alias of reference.aliases) {
@@ -454,6 +462,12 @@ function findChemical(text: string) {
     }
   }
   return best && best.score >= 8 ? best.reference : null;
+}
+
+function findChemicalByCatalog(text: string) {
+  const compact = text.toUpperCase().replace(/[^A-Z0-9]/g, "");
+  if (!compact) return null;
+  return chemicalCatalog.find((reference) => reference.catalogNumbers?.some((catalogNumber) => compact.includes(catalogNumber.toUpperCase()))) ?? null;
 }
 
 function fuzzyPhraseScore(text: string, alias: string) {
