@@ -270,16 +270,17 @@ async function readLabelText(image: File | Blob): Promise<{ text: string; confid
     url = URL.createObjectURL(image);
     const { recognize } = await import("tesseract.js");
     const variants = await buildOcrVariants(image, url);
-    const results = await Promise.all(
-      variants.map(async (variant) => {
-        try {
-          const result = await recognize(variant, "eng");
-          return { text: result.data.text ?? "", confidence: Number(result.data.confidence ?? 0) };
-        } catch {
-          return { text: "", confidence: 0 };
-        }
-      }),
-    );
+    const results: Array<{ text: string; confidence: number }> = [];
+    // Run variants sequentially. Parallel Tesseract workers can exceed mobile
+    // Safari's memory limit and cause the whole tab to be reloaded.
+    for (const variant of variants) {
+      try {
+        const result = await recognize(variant, "eng");
+        results.push({ text: result.data.text ?? "", confidence: Number(result.data.confidence ?? 0) });
+      } catch {
+        results.push({ text: "", confidence: 0 });
+      }
+    }
     const result = results.sort((a, b) => scoreOcrResult(b) - scoreOcrResult(a))[0] ?? { text: "", confidence: 0 };
     const combinedText = uniqueTextLines(results.map((item) => item.text).join("\n"));
     return {
@@ -301,14 +302,12 @@ async function buildOcrVariants(image: File | Blob, objectUrl: string) {
     const crops = [
       { x: 0.08, y: 0.20, w: 0.84, h: 0.70 },
       { x: 0.18, y: 0.28, w: 0.64, h: 0.62 },
-      { x: 0.23, y: 0.35, w: 0.54, h: 0.48 },
-      { x: 0.12, y: 0.18, w: 0.76, h: 0.72 },
-      { x: 0.20, y: 0.42, w: 0.60, h: 0.24 },
     ];
     for (const crop of crops) {
       variants.push(renderOcrVariant(bitmap, crop, "balanced"));
       variants.push(renderOcrVariant(bitmap, crop, "threshold"));
     }
+    bitmap.close();
   } catch {
     return variants;
   }
@@ -320,10 +319,10 @@ function renderOcrVariant(bitmap: ImageBitmap, crop: { x: number; y: number; w: 
   const sourceY = Math.round(bitmap.height * crop.y);
   const sourceW = Math.round(bitmap.width * crop.w);
   const sourceH = Math.round(bitmap.height * crop.h);
-  const scale = 3;
+  const scale = Math.min(2, 1400 / Math.max(sourceW, sourceH));
   const canvas = document.createElement("canvas");
-  canvas.width = sourceW * scale;
-  canvas.height = sourceH * scale;
+  canvas.width = Math.max(1, Math.round(sourceW * scale));
+  canvas.height = Math.max(1, Math.round(sourceH * scale));
   const context = canvas.getContext("2d", { willReadFrequently: true });
   if (!context) return "";
   context.fillStyle = "white";

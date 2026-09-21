@@ -66,7 +66,19 @@ export default function HomePage() {
 
   useEffect(() => {
     if (!hydrated) return;
-    localStorage.setItem(storageKey, JSON.stringify({ drums, products, retention, selectedDrumId, openAiApiKey }));
+    try {
+      localStorage.setItem(storageKey, JSON.stringify({ drums, products, retention, selectedDrumId, openAiApiKey }));
+    } catch {
+      // Mobile browsers have a small storage quota. Keep the inventory even if
+      // older image previews no longer fit instead of crashing the page.
+      const drumsWithoutImages = drums.map((drum) => ({ ...drum, scanImages: [] }));
+      try {
+        localStorage.setItem(storageKey, JSON.stringify({ drums: drumsWithoutImages, products, retention, selectedDrumId, openAiApiKey }));
+      } catch {
+        // Storage can also be unavailable in private browsing. The in-memory
+        // inventory remains usable for the current session.
+      }
+    }
   }, [drums, hydrated, openAiApiKey, products, retention, selectedDrumId]);
 
   function createDrum(form: Omit<Drum, "id" | "status" | "imagesScanned" | "items">) {
@@ -152,21 +164,69 @@ function ActiveDrums({ drums, selected, onSelect, onDelete, onUpdate, products, 
 function CameraScanner({ drum, onUpdate, openAiApiKey }: { drum: Drum; onUpdate: (drum: Drum) => void; openAiApiKey: string }) {
   const fileRef = useRef<HTMLInputElement>(null);
   const [processing, setProcessing] = useState(false);
+  const [scanError, setScanError] = useState("");
   async function processImage(file?: File) {
+    if (!file || processing) return;
     setProcessing(true);
-    const preview = file ? await fileToDataUrl(file) : undefined;
-    const result = await chemicalVisionService.analyzeChemicalImage(file ?? new Blob(), { openAiApiKey: openAiApiKey.trim() || undefined });
-    const additions: InventoryItem[] = result.items.map((item) => ({ ...item, id: crypto.randomUUID(), status: item.chemicalName.value === "UNKNOWN PRODUCT" ? "Unknown" : "Review Required" }));
-    onUpdate({ ...drum, imagesScanned: drum.imagesScanned + 1, scanImages: preview ? [preview, ...(drum.scanImages ?? [])].slice(0, 8) : drum.scanImages, scanWarnings: result.warnings, items: mergeDuplicateItems([...drum.items, ...additions]) });
-    setProcessing(false);
+    setScanError("");
+    try {
+      const { analysisImage, preview } = await prepareCameraImage(file);
+      const result = await chemicalVisionService.analyzeChemicalImage(analysisImage, { openAiApiKey: openAiApiKey.trim() || undefined });
+      const additions: InventoryItem[] = result.items.map((item) => ({ ...item, id: crypto.randomUUID(), status: item.chemicalName.value === "UNKNOWN PRODUCT" ? "Unknown" : "Review Required" }));
+      onUpdate({ ...drum, imagesScanned: drum.imagesScanned + 1, scanImages: [preview, ...(drum.scanImages ?? [])].slice(0, 8), scanWarnings: result.warnings, items: mergeDuplicateItems([...drum.items, ...additions]) });
+    } catch {
+      setScanError("The photo could not be processed. Please try again with the label closer to the camera.");
+    } finally {
+      if (fileRef.current) fileRef.current.value = "";
+      setProcessing(false);
+    }
   }
-  return <Panel title={`DRUM ${drum.drumId}`}><div className="flex min-h-56 items-center justify-center rounded-lg border-2 border-dashed border-slate-300 bg-slate-50 text-center"><div><Camera className="mx-auto mb-3 text-slate-500" size={44} /><p className="font-semibold">Camera area</p><p className="text-sm text-slate-600">Take photos or upload label images.</p><p className="mt-1 text-xs font-semibold text-slate-500">OpenAI Vision proxy first</p></div></div>{Boolean(drum.scanImages?.length) && <div className="mt-3 grid grid-cols-4 gap-2">{drum.scanImages?.map((image, index) => <div key={`${image.slice(0, 24)}-${index}`} aria-label={`Scan ${index + 1}`} className="h-20 w-full rounded-lg border border-slate-200 bg-cover bg-center" style={{ backgroundImage: `url(${image})` }} />)}</div>}{Boolean(drum.scanWarnings?.length) && <div className="mt-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950">{drum.scanWarnings?.map((warning) => <p key={warning} className="flex gap-2"><AlertTriangle size={16} className="mt-0.5 shrink-0" />{warning}</p>)}</div>}<div className="mt-4 grid grid-cols-3 gap-2"><MetricMini label="Images" value={drum.imagesScanned} /><MetricMini label="Detected" value={drum.items.length} /><MetricMini label="Review" value={completionBlockers(drum).length} /></div><input ref={fileRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={(e) => void processImage(e.target.files?.[0])} /><div className="mt-4 grid gap-3 sm:grid-cols-4"><button disabled={processing} onClick={() => fileRef.current?.click()} className="touch-button justify-center bg-slate-900 text-white"><Camera size={20} />TAKE PHOTO</button><button disabled={processing} onClick={() => fileRef.current?.click()} className="touch-button justify-center border border-slate-300 bg-white"><ImageUp size={20} />UPLOAD IMAGE</button><a href="#review" className="touch-button justify-center border border-slate-300 bg-white"><AlertTriangle size={20} />REVIEW ITEMS</a><a href="#summary" className="touch-button justify-center bg-emerald-700 text-white"><CheckCircle2 size={20} />FINISH SCANNING</a></div>{processing && <p className="mt-3 text-sm font-semibold text-amber-800">Reading label text with OpenAI Vision when available, then OCR fallback. This can take a few seconds...</p>}</Panel>;
+  return <Panel title={`DRUM ${drum.drumId}`}><div className="flex min-h-56 items-center justify-center rounded-lg border-2 border-dashed border-slate-300 bg-slate-50 text-center"><div><Camera className="mx-auto mb-3 text-slate-500" size={44} /><p className="font-semibold">Camera area</p><p className="text-sm text-slate-600">Take photos or upload label images.</p><p className="mt-1 text-xs font-semibold text-slate-500">OpenAI Vision proxy first</p></div></div>{Boolean(drum.scanImages?.length) && <div className="mt-3 grid grid-cols-4 gap-2">{drum.scanImages?.map((image, index) => <div key={`${image.slice(0, 24)}-${index}`} aria-label={`Scan ${index + 1}`} className="h-20 w-full rounded-lg border border-slate-200 bg-cover bg-center" style={{ backgroundImage: `url(${image})` }} />)}</div>}{Boolean(drum.scanWarnings?.length) && <div className="mt-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950">{drum.scanWarnings?.map((warning) => <p key={warning} className="flex gap-2"><AlertTriangle size={16} className="mt-0.5 shrink-0" />{warning}</p>)}</div>}{scanError && <p className="mt-3 rounded-lg border border-red-200 bg-red-50 p-3 text-sm font-semibold text-red-800" role="alert">{scanError}</p>}<div className="mt-4 grid grid-cols-3 gap-2"><MetricMini label="Images" value={drum.imagesScanned} /><MetricMini label="Detected" value={drum.items.length} /><MetricMini label="Review" value={completionBlockers(drum).length} /></div><input ref={fileRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={(e) => void processImage(e.target.files?.[0])} /><div className="mt-4 grid gap-3 sm:grid-cols-4"><button type="button" disabled={processing} onClick={() => fileRef.current?.click()} className="touch-button justify-center bg-slate-900 text-white"><Camera size={20} />TAKE PHOTO</button><button type="button" disabled={processing} onClick={() => fileRef.current?.click()} className="touch-button justify-center border border-slate-300 bg-white"><ImageUp size={20} />UPLOAD IMAGE</button><a href="#review" className="touch-button justify-center border border-slate-300 bg-white"><AlertTriangle size={20} />REVIEW ITEMS</a><a href="#summary" className="touch-button justify-center bg-emerald-700 text-white"><CheckCircle2 size={20} />FINISH SCANNING</a></div>{processing && <p className="mt-3 text-sm font-semibold text-amber-800" aria-live="polite">Optimising the photo and reading the label. Keep this page open for a few seconds...</p>}</Panel>;
 }
 
-function fileToDataUrl(file: File) {
-  return new Promise<string>((resolve) => {
+async function prepareCameraImage(file: File) {
+  const source = await loadImageSource(file);
+  try {
+    const analysisImage = await renderCompressedImage(source, 1600, 0.82);
+    const previewImage = await renderCompressedImage(source, 480, 0.68);
+    const preview = await fileToDataUrl(previewImage);
+    return { analysisImage, preview };
+  } finally {
+    if ("close" in source && typeof source.close === "function") source.close();
+  }
+}
+
+async function loadImageSource(file: File): Promise<ImageBitmap | HTMLImageElement> {
+  if (typeof createImageBitmap === "function") return createImageBitmap(file, { imageOrientation: "from-image" });
+  const url = URL.createObjectURL(file);
+  try {
+    const image = new Image();
+    image.src = url;
+    await image.decode();
+    return image;
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+function renderCompressedImage(source: ImageBitmap | HTMLImageElement, maxDimension: number, quality: number) {
+  const sourceWidth = source.width;
+  const sourceHeight = source.height;
+  const scale = Math.min(1, maxDimension / Math.max(sourceWidth, sourceHeight));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(sourceWidth * scale));
+  canvas.height = Math.max(1, Math.round(sourceHeight * scale));
+  const context = canvas.getContext("2d");
+  if (!context) return Promise.reject(new Error("Canvas is unavailable"));
+  context.drawImage(source, 0, 0, canvas.width, canvas.height);
+  return new Promise<Blob>((resolve, reject) => canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error("Image compression failed")), "image/jpeg", quality));
+}
+
+function fileToDataUrl(file: Blob) {
+  return new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(reader.error);
     reader.readAsDataURL(file);
   });
 }
