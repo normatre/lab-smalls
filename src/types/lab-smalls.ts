@@ -27,6 +27,7 @@ export type InventoryItem = {
   status: ItemStatus;
   sourceImage?: string;
   sourceImageIds?: string[];
+  ocrOutput?: string;
   notes?: string;
 };
 

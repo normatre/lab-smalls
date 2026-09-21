@@ -97,6 +97,7 @@ const detected = ({
   un = null,
   catalogNumber = null,
   source = "label",
+  ocrOutput,
 }: {
   name: string;
   quantity: number | null;
@@ -109,6 +110,7 @@ const detected = ({
   un?: string | null;
   catalogNumber?: string | null;
   source?: FieldSource;
+  ocrOutput?: string;
 }): DetectedChemical => ({
   chemicalName: sourced(name, confidence, source),
   quantity: sourced(quantity, quantity ? Math.min(0.92, confidence + 0.08) : 0.35, quantity ? "label" : "image"),
@@ -117,6 +119,7 @@ const detected = ({
   physicalState: sourced(state, state === "Unknown" ? 0.3 : 0.86, state === "Unknown" ? "image" : "database"),
   confidence,
   sourceImage: "ocr-upload",
+  ocrOutput: cleanOcrOutput(ocrOutput),
 });
 
 export class MockChemicalVisionService implements ChemicalVisionService {
@@ -197,6 +200,7 @@ async function analyzeWithOpenAIVision(image: File | Blob, apiKey?: string): Pro
           state,
           confidence,
           source: "database",
+          ocrOutput: outputText,
         }),
       ],
     };
@@ -439,8 +443,14 @@ async function parseLabelText(text: string): Promise<{ item: DetectedChemical | 
       state,
       confidence,
       source: usableDatabase || usableReference ? "database" : "image",
+      ocrOutput: text,
     }),
   };
+}
+
+function cleanOcrOutput(text?: string) {
+  const cleaned = text?.replace(/\r/g, "").trim();
+  return cleaned ? cleaned.slice(0, 4000) : undefined;
 }
 
 function normalizeText(text: string) {
@@ -701,6 +711,7 @@ function fallbackByBottleProfile(profile: VisionProfile, ocrText: string): { ite
           manufacturer: product.manufacturer,
           catalogNumber: extractCatalogNumber(normalized) ?? product.catalogNumbers[0],
           source: "label",
+          ocrOutput: ocrText,
         }),
       ],
     };
@@ -713,7 +724,7 @@ function fallbackByBottleProfile(profile: VisionProfile, ocrText: string): { ite
         "OCR could not reliably read each label. Take closer individual label photos for chemical names and sizes.",
       ],
       items: [
-        detected({ name: "UNKNOWN MERCK REAGENT", quantity: profile.estimatedBottleCount, size: null, unit: null, state: "Unknown", confidence: 0.42, source: "image" }),
+        detected({ name: "UNKNOWN MERCK REAGENT", quantity: profile.estimatedBottleCount, size: null, unit: null, state: "Unknown", confidence: 0.42, source: "image", ocrOutput: ocrText }),
       ],
     };
   }
@@ -725,14 +736,14 @@ function fallbackByBottleProfile(profile: VisionProfile, ocrText: string): { ite
         "Try a sharper photo taken straight-on with the label filling most of the frame.",
       ],
       items: [
-        detected({ name: "UNKNOWN PRODUCT", quantity: 1, size: null, unit: null, state: "Unknown", confidence: 0.3, manufacturer: "Merck / Sigma-Aldrich", source: "image" }),
+        detected({ name: "UNKNOWN PRODUCT", quantity: 1, size: null, unit: null, state: "Unknown", confidence: 0.3, manufacturer: "Merck / Sigma-Aldrich", source: "image", ocrOutput: ocrText }),
       ],
     };
   }
 
   return {
     warnings: ["Image could not be confidently matched to a known lab reagent pattern. Manual review is required."],
-    items: [detected({ name: "UNKNOWN PRODUCT", quantity: null, size: null, unit: null, state: "Unknown", confidence: 0.22, manufacturer: undefined, source: "image" })],
+    items: [detected({ name: "UNKNOWN PRODUCT", quantity: null, size: null, unit: null, state: "Unknown", confidence: 0.22, manufacturer: undefined, source: "image", ocrOutput: ocrText })],
   };
 }
 
