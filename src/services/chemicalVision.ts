@@ -44,6 +44,10 @@ const chemicalCatalog: ChemicalReference[] = [
   { name: "Hydrogen Peroxide", aliases: ["hydrogen peroxide", "h2o2"], state: "Liquid", cas: "7722-84-1", un: "UN2014" },
   { name: "Formaldehyde Solution", aliases: ["formaldehyde", "formalin"], state: "Liquid", cas: "50-00-0", un: "UN1198" },
   { name: "Phenol", aliases: ["phenol", "carbolic acid"], state: "Solid", cas: "108-95-2", un: "UN1671" },
+  { name: "Hexamethyldisiloxane", aliases: ["hexamethyldisiloxane", "hmdso"], state: "Liquid", cas: "107-46-0" },
+  { name: "Bromotrimethylsilane", aliases: ["bromotrimethylsilane", "trimethylsilyl bromide", "tmbs"], state: "Liquid", cas: "2857-97-8" },
+  { name: "Chlorotrimethylsilane", aliases: ["chlorotrimethylsilane", "trimethylsilyl chloride", "tmcs"], state: "Liquid", cas: "75-77-4" },
+  { name: "tert-Butyldimethylsilyl chloride", aliases: ["tert-butyldimethylsilyl chloride", "t-butyldimethylsilyl chloride", "tbdms chloride", "tbscl"], state: "Solid", cas: "18162-48-6" },
 ];
 
 const labProductCatalog: LabProductReference[] = [
@@ -117,12 +121,20 @@ const detected = ({
 export class MockChemicalVisionService implements ChemicalVisionService {
   async analyzeChemicalImage(image: File | Blob, options?: { openAiApiKey?: string }): Promise<{ items: DetectedChemical[]; warnings: string[] }> {
     await new Promise((resolve) => setTimeout(resolve, 350));
+    const [profile, ocr] = await Promise.all([profileImage(image), readLabelText(image)]);
+    const parsed = await parseLabelText(ocr.text);
+
+    if (parsed.item && parsed.item.confidence >= 0.72 && parsed.warnings.some((warning) => warning.startsWith("Identity validated"))) {
+      return {
+        warnings: [`OCR confidence ${Math.round(ocr.confidence)}%. The bold product-name line was prioritised.`, ...parsed.warnings],
+        items: [parsed.item],
+      };
+    }
+
     if (image.size > 0) {
       const aiResult = await analyzeWithOpenAIVision(image, options?.openAiApiKey);
       if (aiResult.items.length > 0) return aiResult;
     }
-    const [profile, ocr] = await Promise.all([profileImage(image), readLabelText(image)]);
-    const parsed = await parseLabelText(ocr.text);
 
     if (parsed.item) {
       return {
@@ -261,23 +273,30 @@ async function readLabelText(image: File | Blob): Promise<{ text: string; confid
   let url: string | null = null;
   try {
     url = URL.createObjectURL(image);
-    const { recognize } = await import("tesseract.js");
+    const { createWorker, PSM } = await import("tesseract.js");
     const variants = await buildOcrVariants(image, url);
     const results: Array<{ text: string; confidence: number }> = [];
     // Run variants sequentially. Parallel Tesseract workers can exceed mobile
     // Safari's memory limit and cause the whole tab to be reloaded.
+    const worker = await createWorker("eng");
     for (const variant of variants) {
       try {
-        const result = await recognize(variant, "eng");
+        await worker.setParameters({
+          tessedit_pageseg_mode: variant.singleLine ? PSM.SINGLE_LINE : PSM.SINGLE_BLOCK,
+          preserve_interword_spaces: "1",
+        });
+        const result = await worker.recognize(variant.source);
         results.push({ text: result.data.text ?? "", confidence: Number(result.data.confidence ?? 0) });
       } catch {
         results.push({ text: "", confidence: 0 });
       }
     }
+    await worker.terminate();
     const result = results.sort((a, b) => scoreOcrResult(b) - scoreOcrResult(a))[0] ?? { text: "", confidence: 0 };
     const combinedText = uniqueTextLines(results.map((item) => item.text).join("\n"));
+    const primaryName = chooseConsensusChemicalName(results.map((item) => item.text));
     return {
-      text: combinedText || result.text,
+      text: [primaryName, combinedText || result.text].filter(Boolean).join("\n"),
       confidence: result.confidence,
     };
   } catch {
@@ -288,23 +307,41 @@ async function readLabelText(image: File | Blob): Promise<{ text: string; confid
 }
 
 async function buildOcrVariants(image: File | Blob, objectUrl: string) {
-  const variants = [objectUrl];
+  const variants: Array<{ source: string; singleLine: boolean }> = [{ source: objectUrl, singleLine: false }];
   if (typeof createImageBitmap === "undefined") return variants;
   try {
     const bitmap = await createImageBitmap(image);
     const crops = [
-      { x: 0.08, y: 0.20, w: 0.84, h: 0.70 },
-      { x: 0.18, y: 0.28, w: 0.64, h: 0.62 },
+      { x: 0.12, y: 0.28, w: 0.76, h: 0.30, singleLine: false },
+      { x: 0.18, y: 0.38, w: 0.68, h: 0.20, singleLine: true },
+      { x: 0.08, y: 0.20, w: 0.84, h: 0.70, singleLine: false },
     ];
     for (const crop of crops) {
-      variants.push(renderOcrVariant(bitmap, crop, "balanced"));
-      variants.push(renderOcrVariant(bitmap, crop, "threshold"));
+      variants.push({ source: renderOcrVariant(bitmap, crop, "balanced"), singleLine: crop.singleLine });
+      variants.push({ source: renderOcrVariant(bitmap, crop, "threshold"), singleLine: crop.singleLine });
     }
     bitmap.close();
   } catch {
     return variants;
   }
   return variants;
+}
+
+function chooseConsensusChemicalName(texts: string[]) {
+  const candidates = texts.flatMap((text) => text.split(/\r?\n/))
+    .map((line) => cleanChemicalNameCandidate(line.replace(/[^a-zA-Z0-9+,\-.\s]/g, " ").replace(/\s+/g, " ").trim()))
+    .filter((line) => line.length >= 7 && line.length <= 64 && !isLabelNoise(line));
+  let best = "";
+  let bestScore = -Infinity;
+  for (const candidate of candidates) {
+    const agreement = candidates.filter((other) => normalizedEditSimilarity(candidate, other) >= 0.68).length;
+    const score = scoreLabelName(candidate) + agreement * 18;
+    if (score > bestScore) {
+      best = candidate;
+      bestScore = score;
+    }
+  }
+  return best;
 }
 
 function renderOcrVariant(bitmap: ImageBitmap, crop: { x: number; y: number; w: number; h: number }, mode: "balanced" | "threshold") {
@@ -383,7 +420,7 @@ async function parseLabelText(text: string): Promise<{ item: DetectedChemical | 
     warnings: [
       !reference && !pubChem && !labProduct ? "Chemical/product name was not matched to the built-in catalogues or external databases." : "",
       labProduct ? `Matched lab product catalogue${catalogNumber ? ` (${catalogNumber})` : ""}.` : "",
-      usableDatabase ? `Identity validated with ${usableDatabase.source}.` : "",
+      usableDatabase ? `Identity validated with ${usableDatabase.source}.` : usableReference ? "Identity validated with the local chemical reference cache." : "",
       pubChem && !usableDatabase ? `Rejected conflicting database match (${pubChem.name}) because the label name looked more specific.` : "",
       !size ? "Container size was not found on the label." : "",
       state === "Unknown" ? "Physical state could not be inferred from label/catalogue." : "",
@@ -412,11 +449,24 @@ function findChemical(text: string) {
   let best: { reference: ChemicalReference; score: number } | null = null;
   for (const reference of chemicalCatalog) {
     for (const alias of reference.aliases) {
-      const score = text.includes(alias) ? alias.length : fuzzyTokenScore(text, alias);
+      const score = text.includes(alias) ? alias.length + 30 : Math.max(fuzzyTokenScore(text, alias), fuzzyPhraseScore(text, alias));
       if (score > (best?.score ?? 0)) best = { reference, score };
     }
   }
-  return best && best.score >= 5 ? best.reference : null;
+  return best && best.score >= 8 ? best.reference : null;
+}
+
+function fuzzyPhraseScore(text: string, alias: string) {
+  const aliasWords = alias.split(/\s+/).filter(Boolean);
+  const words = text.split(/\s+/).filter(Boolean);
+  if (alias.replace(/[^a-z0-9]/gi, "").length < 9) return 0;
+  let similarity = 0;
+  for (const width of [Math.max(1, aliasWords.length - 1), aliasWords.length, aliasWords.length + 1]) {
+    for (let index = 0; index <= words.length - width; index += 1) {
+      similarity = Math.max(similarity, normalizedEditSimilarity(words.slice(index, index + width).join(" "), alias));
+    }
+  }
+  return similarity >= 0.68 ? Math.round(alias.length * similarity) : 0;
 }
 
 function findLabProduct(text: string) {
@@ -514,11 +564,29 @@ function scoreLabelName(line: string) {
 
 function namesConflict(labelName: string | null, databaseName: string) {
   if (!labelName) return false;
+  if (normalizedEditSimilarity(labelName, databaseName) >= 0.68) return false;
   const labelTokens = distinctiveTokens(labelName);
   const databaseTokens = new Set(distinctiveTokens(databaseName));
   if (labelTokens.length === 0) return false;
   const missing = labelTokens.filter((token) => !databaseTokens.has(token));
   return missing.length > 0 && labelTokens.length >= 1;
+}
+
+function normalizedEditSimilarity(left: string, right: string) {
+  const a = left.toLowerCase().replace(/[^a-z0-9]/g, "");
+  const b = right.toLowerCase().replace(/[^a-z0-9]/g, "");
+  if (!a || !b) return 0;
+  const row = Array.from({ length: b.length + 1 }, (_, index) => index);
+  for (let i = 1; i <= a.length; i += 1) {
+    let diagonal = row[0];
+    row[0] = i;
+    for (let j = 1; j <= b.length; j += 1) {
+      const above = row[j];
+      row[j] = Math.min(row[j] + 1, row[j - 1] + 1, diagonal + (a[i - 1] === b[j - 1] ? 0 : 1));
+      diagonal = above;
+    }
+  }
+  return 1 - row[b.length] / Math.max(a.length, b.length);
 }
 
 function distinctiveTokens(name: string) {

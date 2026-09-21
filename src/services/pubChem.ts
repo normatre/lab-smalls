@@ -111,8 +111,17 @@ function buildNameCandidates(rawText: string) {
     .split(/\r?\n/)
     .map(cleanCandidate)
     .filter((candidate): candidate is string => Boolean(candidate));
+  const fragments = lines.flatMap((line) => {
+    const words = line.split(/\s+/).filter(Boolean);
+    return [
+      ...line.split(/[,;]/).map(cleanCandidate),
+      ...words,
+      ...words.slice(0, -1).map((_, index) => words.slice(index, index + 2).join(" ")),
+      ...words.slice(0, -2).map((_, index) => words.slice(index, index + 3).join(" ")),
+    ].filter((candidate): candidate is string => Boolean(candidate) && candidate.length >= 6);
+  });
   const cas = extractCas(rawText);
-  const unique = [...new Set([cas, ...lines].filter((candidate): candidate is string => Boolean(candidate)))];
+  const unique = [...new Set([cas, ...lines, ...fragments].filter((candidate): candidate is string => Boolean(candidate)))];
   return unique.sort((a, b) => scoreCandidate(b) - scoreCandidate(a));
 }
 
@@ -128,7 +137,8 @@ function cleanCandidate(value: string) {
 
 function scoreCandidate(candidate: string) {
   let score = /^\d{2,7}-\d{2}-\d$/.test(candidate) ? 100 : 0;
-  if (/\b(acid|alcohol|acetone|hydroxide|chloride|sulfate|sulphate|solution|buffer|reagent|medium)\b/i.test(candidate)) score += 35;
+  if (/\b(acid|alcohol|acetone|hydroxide|chloride|bromide|sulfate|sulphate|silane|siloxane|solution|buffer|reagent|medium)\b/i.test(candidate)) score += 35;
+  if (/^[a-z][a-z-]{11,}$/i.test(candidate)) score += 30;
   if (candidate.split(/\s+/).length >= 2) score += 15;
   return score;
 }
