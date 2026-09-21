@@ -26,6 +26,7 @@ export type InventoryItem = {
   confidence: number;
   status: ItemStatus;
   sourceImage?: string;
+  sourceImageIds?: string[];
   notes?: string;
 };
 
@@ -40,6 +41,7 @@ export type Drum = {
   status: DrumStatus;
   imagesScanned: number;
   scanImages?: string[];
+  scanImageIds?: string[];
   scanWarnings?: string[];
   finalisedAt?: string;
   items: InventoryItem[];

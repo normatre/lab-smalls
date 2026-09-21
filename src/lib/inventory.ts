@@ -46,6 +46,7 @@ export function mergeDuplicateItems(items: InventoryItem[]) {
 
     merged.set(key, {
       ...existing,
+      sourceImageIds: [...new Set([...(existing.sourceImageIds ?? []), ...(item.sourceImageIds ?? [])])],
       quantity: {
         value: (Number(existing.quantity.value) || 0) + (Number(item.quantity.value) || 0),
         confidence: Math.min(existing.quantity.confidence, item.quantity.confidence),
