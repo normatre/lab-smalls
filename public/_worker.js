@@ -1,11 +1,12 @@
 const visionPrompt =
-  "Read this lab chemical container label. First locate the manufacturer banner, then read the first large bold black product-name line immediately below or beside the catalogue/pack code. That exact English product line is chemicalName. Never use the manufacturer (such as Sigma-Aldrich or Merck), a translated synonym below the main name, a solvent-only fragment such as Methanol Solution, or a shortened fragment such as Silyl Chloride. If the label says Boron trifluoride-methanol solution or Boron trifluoride in methanol, chemicalName must be Boron Trifluoride Methanol Solution, not Methanol Solution. Read the catalogue number separately: for 92337-5ML return catalogNumber 92337, quantity 1, containerSize 5, unit mL; for 89595-10X1ML return catalogNumber 89595, quantity 10, containerSize 1, unit mL. Ignore lot, purity/grade, hazard text and pictograms. Preserve full numbered names, salts, buffer names and commercial reagent names exactly. Return only compact JSON with keys: chemicalName, catalogNumber, quantity, containerSize, unit, physicalState, physicalStateEvidence, casNumber, confidence. physicalStateEvidence must be label, product-name, inferred, or none. unit must be g, kg, mL, or L. physicalState must be Solid, Liquid, Gas, or Unknown. Use Unknown rather than guessing.";
+  "Transcribe this lab chemical label before identifying it. Return every legible text line in ocrLines. Separately identify manufacturer, catalogue/pack code, CAS, lot, purity/grade, package size, and the large bold English product-name line. Never use Sigma-Aldrich, Merck, a translated synonym, solvent-only fragment, shortened fragment, or hazard wording as chemicalName. Do not invent missing letters. Return only compact JSON with keys: ocrLines, chemicalName, manufacturer, catalogNumber, quantity, containerSize, unit, physicalState, physicalStateEvidence, casNumber, confidence. unit must be g, kg, mL, or L. physicalState must be Solid, Liquid, Gas, or Unknown. Use Unknown rather than guessing.";
 
 const worker = {
   async fetch(request, env) {
     const url = new URL(request.url);
     if (url.pathname === "/api/openai-vision") return handleVisionRequest(request, env);
     if (url.pathname === "/api/chemical-lookup") return handleChemicalLookup(request, env);
+    if (url.pathname === "/api/resolve-ocr") return handleResolveOcr(request, env);
     return env.ASSETS.fetch(request);
   },
 };
@@ -47,6 +48,174 @@ async function handleVisionRequest(request, env) {
   } catch {
     return json({ error: "Vision OCR proxy failed" }, 500);
   }
+}
+
+async function handleResolveOcr(request, env) {
+  if (request.method !== "POST") return json({ error: "Method not allowed" }, 405);
+  try {
+    const body = await request.json();
+    const ocrText = cleanMultilineText(body.ocrText, 12000);
+    const hints = {
+      name: cleanText(body.name, 160),
+      manufacturer: cleanText(body.manufacturer, 80),
+      catalogNumber: cleanText(body.catalogNumber, 40),
+      casNumber: cleanText(body.casNumber, 24),
+      labelState: normalizeState(body.labelState),
+    };
+    const categories = categorizeOcrText(ocrText, hints);
+    const result = await resolveCategorizedIdentity(categories, hints, env);
+    if (!result) {
+      return json({
+        name: "",
+        source: "Unverified OCR",
+        physicalState: hints.labelState,
+        confidence: 0,
+        reviewRequired: true,
+        categories,
+      });
+    }
+    return json({ ...result, categories });
+  } catch {
+    return json({ error: "OCR identity resolution failed" }, 500);
+  }
+}
+
+async function resolveCategorizedIdentity(categories, hints, env) {
+  const catalogNumbers = [...new Set([hints.catalogNumber, ...categories.catalogNumbers].filter(Boolean))];
+  const brandText = [hints.manufacturer, ...categories.brands].join(" ");
+  for (const catalogNumber of catalogNumbers.slice(0, 3)) {
+    const vendor = await lookupOfficialVendorProduct(catalogNumber, brandText);
+    if (!vendor) continue;
+    const pubChem = await lookupPubChem(vendor.name, vendor.casNumber || hints.casNumber);
+    if (pubChem && (pubChem.confidence >= 0.86 || vendor.casNumber === pubChem.casNumber)) {
+      return {
+        ...pubChem,
+        name: vendor.name,
+        source: `${vendor.source} + PubChem`,
+        physicalState: hints.labelState !== "Unknown" ? hints.labelState : vendor.physicalState !== "Unknown" ? vendor.physicalState : pubChem.physicalState,
+        confidence: 0.99,
+        reviewRequired: false,
+      };
+    }
+    return { ...vendor, confidence: 0.96, reviewRequired: false };
+  }
+
+  const casNumber = hints.casNumber || categories.casNumbers[0] || "";
+  if (casNumber) {
+    const casMatch = await lookupPubChem(hints.name || casNumber, casNumber);
+    if (casMatch) return { ...casMatch, confidence: 0.99, reviewRequired: false };
+  }
+
+  const candidates = [...new Set([hints.name, ...categories.chemicalCandidates].filter(Boolean))]
+    .sort((left, right) => scoreChemicalCandidate(right) - scoreChemicalCandidate(left))
+    .slice(0, 7);
+  const pubChemMatches = await Promise.all(candidates.map((candidate) => lookupPubChem(candidate, "")));
+  const strongPubChem = pubChemMatches
+    .filter((match) => match && match.confidence >= 0.86)
+    .sort((left, right) => right.confidence - left.confidence)[0];
+  if (strongPubChem) {
+    return {
+      ...strongPubChem,
+      physicalState: hints.labelState !== "Unknown" ? hints.labelState : strongPubChem.physicalState,
+      reviewRequired: false,
+    };
+  }
+
+  for (const candidate of candidates.slice(0, 4)) {
+    const [comptox, echa] = await Promise.all([
+      lookupCompTox(candidate, casNumber, env),
+      lookupEcha(candidate, casNumber),
+    ]);
+    const match = [comptox, echa].filter(Boolean).sort((left, right) => right.confidence - left.confidence)[0];
+    if (match?.confidence >= 0.86) return { ...match, reviewRequired: false };
+  }
+  return null;
+}
+
+function categorizeOcrText(ocrText, hints) {
+  const lines = ocrText.split(/\r?\n/).map((line) => line.replace(/\s+/g, " ").trim()).filter(Boolean);
+  const result = {
+    chemicalCandidates: [], brands: [], catalogNumbers: [], casNumbers: [], packageSizes: [],
+    lotNumbers: [], purityAndGrade: [], ignoredText: [],
+  };
+  for (const line of lines) {
+    const brand = line.match(/\b(?:sigma(?:-aldrich)?|aldrich|merck|millipore|supelco)\b/i);
+    const cas = line.match(/\b\d{2,7}-\d{2}-\d\b/);
+    const packCode = line.match(/\b([A-Z]?\d[\d.]{3,}[A-Z]?)\s*-\s*(?:\d+\s*[X×]\s*)?\d+(?:[.,]\d+)?\s*(?:ML|G|KG|L)\b/i);
+    const size = line.match(/\b(?:\d+\s*[X×]\s*)?\d+(?:[.,]\d+)?\s*(?:ML|G|KG|L)\b/i);
+    const lot = line.match(/\b(?:lot|batch)\s*(?:no\.?|#)?\s*[:#-]?\s*[A-Z0-9-]+/i);
+    const purity = /\b(?:puriss?|purum|reagent|grade|assay|ACS|GC|HPLC|≥|>|%)\b/i.test(line);
+    if (brand) result.brands.push(brand[0]);
+    if (cas) result.casNumbers.push(cas[0]);
+    if (packCode) result.catalogNumbers.push(packCode[1].replace(/\.$/, ""));
+    if (size) result.packageSizes.push(size[0]);
+    if (lot) result.lotNumbers.push(lot[0]);
+    if (purity) result.purityAndGrade.push(line);
+    const candidate = cleanOcrChemicalCandidate(line);
+    if (candidate && !brand && !cas && !lot && !purity && !/\b(?:danger|warning|store|storage|safety|www\.|made in|for research|no ghs|symbol)\b/i.test(line)) {
+      result.chemicalCandidates.push(candidate);
+    } else if (!brand && !cas && !packCode && !size && !lot && !purity) {
+      result.ignoredText.push(line);
+    }
+  }
+  if (hints.name) result.chemicalCandidates.unshift(hints.name);
+  if (hints.manufacturer) result.brands.unshift(hints.manufacturer);
+  if (hints.catalogNumber) result.catalogNumbers.unshift(hints.catalogNumber);
+  if (hints.casNumber) result.casNumbers.unshift(hints.casNumber);
+  for (const key of Object.keys(result)) result[key] = [...new Set(result[key])].slice(0, 20);
+  return result;
+}
+
+function cleanOcrChemicalCandidate(line) {
+  const candidate = line
+    .replace(/^\s*[A-Z]?\d[\d.]{3,}[A-Z]?\s*-\s*(?:\d+\s*[X×]\s*)?\d+(?:[.,]\d+)?\s*(?:ML|G|KG|L)\s*/i, "")
+    .replace(/\b(?:puriss?|purum|reagent|grade|assay|ACS|GC|HPLC)\b.*$/i, "")
+    .replace(/[^A-Za-z0-9,+().'\-\s]/g, " ").replace(/\s+/g, " ").trim();
+  if (candidate.length < 5 || candidate.length > 120 || !/[A-Za-z]{4}/.test(candidate)) return "";
+  if (/^(?:lot|batch|sigma|aldrich|merck|millipore|supelco)/i.test(candidate)) return "";
+  return candidate;
+}
+
+function scoreChemicalCandidate(value) {
+  let score = Math.min(50, value.length);
+  if (/\b(?:acid|alcohol|chloride|bromide|fluoride|hydroxide|sulfate|silane|siloxane|solution|buffer|reagent|oxide|nitrate|phosphate)\b/i.test(value)) score += 35;
+  if (/^[A-Za-z][A-Za-z0-9,+'().\-\s]{7,}$/.test(value)) score += 15;
+  if (/\b(?:lot|batch|sigma|aldrich|merck|puriss?|grade|store|warning)\b/i.test(value)) score -= 80;
+  return score;
+}
+
+async function lookupOfficialVendorProduct(catalogNumber, brandText) {
+  const compact = catalogNumber.replace(/[^A-Za-z0-9]/g, "").toLowerCase();
+  if (compact.length < 4) return null;
+  const preferredBrands = /\bmerck|millipore\b/i.test(brandText)
+    ? ["mm", "sial", "aldrich", "supelco"]
+    : ["sial", "aldrich", "supelco", "mm"];
+  const pages = await Promise.all(preferredBrands.map(async (brand) => {
+    const url = `https://www.sigmaaldrich.com/GB/en/product/${brand}/${compact}`;
+    const html = await fetchText(url, 7500);
+    return html ? parseOfficialProductPage(html, catalogNumber, brand === "mm" ? "Merck" : "Sigma-Aldrich") : null;
+  }));
+  const product = pages.find(Boolean);
+  if (product) return product;
+
+  const merckUrl = `https://www.merckmillipore.com/GB/en/search/${encodeURIComponent(catalogNumber)}?searchterm=${encodeURIComponent(catalogNumber)}`;
+  const merckHtml = await fetchText(merckUrl, 7500);
+  return merckHtml ? parseOfficialProductPage(merckHtml, catalogNumber, "Merck") : null;
+}
+
+function parseOfficialProductPage(html, catalogNumber, source) {
+  const plain = stripHtml(html);
+  const compactCatalog = catalogNumber.replace(/[^A-Za-z0-9]/g, "");
+  if (!plain.replace(/[^A-Za-z0-9]/g, "").toLowerCase().includes(compactCatalog.toLowerCase())) return null;
+  const h1 = stripHtml(html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i)?.[1] || "");
+  const title = stripHtml(html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] || "").split(/\s+[|–-]\s+/)[0].trim();
+  const name = [h1, title].find((value) => value && value.length >= 4 && value.length <= 120 && !/search results|sigma-aldrich|merck millipore/i.test(value));
+  if (!name) return null;
+  const casNumber = plain.match(/CAS(?: Number| #)?\s*:?\s*(\d{2,7}-\d{2}-\d)/i)?.[1] || "";
+  return {
+    name: titleCaseWords(name), source, casNumber,
+    physicalState: stateFromDescription(plain.match(/\bform\s+([A-Za-z -]{3,40})/i)?.[1] || plain),
+  };
 }
 
 async function handleChemicalLookup(request, env) {
@@ -350,6 +519,29 @@ function titleCaseWords(value) {
 
 function cleanText(value, maxLength) {
   return typeof value === "string" ? value.replace(/[<>]/g, "").replace(/\s+/g, " ").trim().slice(0, maxLength) : "";
+}
+
+function cleanMultilineText(value, maxLength) {
+  return typeof value === "string"
+    ? value.replace(/[<>]/g, "").replace(/\r/g, "").replace(/[\t ]+/g, " ").trim().slice(0, maxLength)
+    : "";
+}
+
+async function fetchText(url, timeoutMs) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, {
+      signal: controller.signal,
+      headers: { Accept: "text/html,application/xhtml+xml", "User-Agent": "Lab-Smalls-Scanner/1.0" },
+    });
+    if (!response.ok) return "";
+    return (await response.text()).slice(0, 1500000);
+  } catch {
+    return "";
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 async function fetchJson(url, timeoutMs) {

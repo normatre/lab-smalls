@@ -12,6 +12,17 @@ export type SourcedField<T> = {
   source: FieldSource;
 };
 
+export type OcrCategories = {
+  chemicalCandidates: string[];
+  brands: string[];
+  catalogNumbers: string[];
+  casNumbers: string[];
+  packageSizes: string[];
+  lotNumbers: string[];
+  purityAndGrade: string[];
+  ignoredText: string[];
+};
+
 export type InventoryItem = {
   id: string;
   chemicalName: SourcedField<string>;
@@ -28,6 +39,7 @@ export type InventoryItem = {
   sourceImage?: string;
   sourceImageIds?: string[];
   ocrOutput?: string;
+  ocrCategories?: OcrCategories;
   notes?: string;
 };
 

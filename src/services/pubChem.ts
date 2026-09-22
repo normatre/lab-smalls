@@ -1,4 +1,4 @@
-import type { PhysicalState } from "@/types/lab-smalls";
+import type { OcrCategories, PhysicalState } from "@/types/lab-smalls";
 
 export type PubChemMatch = {
   cid: number;
@@ -8,6 +8,7 @@ export type PubChemMatch = {
   physicalState: PhysicalState;
   confidence: number;
   reviewRequired: boolean;
+  categories?: OcrCategories;
 };
 
 type ChemicalLookupResponse = {
@@ -16,6 +17,7 @@ type ChemicalLookupResponse = {
   physicalState: PhysicalState;
   confidence: number;
   reviewRequired: boolean;
+  categories?: OcrCategories;
 };
 
 type CachedLookup = ChemicalLookupResponse & {
@@ -28,14 +30,26 @@ const cacheKey = "lab-smalls-chemical-cache-v1";
 const cacheTtl = 90 * 24 * 60 * 60 * 1000;
 
 export async function lookupPubChemFromText(rawText: string): Promise<PubChemMatch | null> {
-  const candidates = buildNameCandidates(rawText).slice(0, 8);
-  let best: PubChemMatch | null = null;
-  for (const candidate of candidates) {
-    const match = await lookupChemicalEverywhere(candidate, extractCas(rawText));
-    if (match && (!best || match.confidence > best.confidence)) best = match;
-    if (match && match.confidence >= 0.92 && !match.reviewRequired) return match;
+  return lookupChemicalFromOcr(rawText);
+}
+
+export async function lookupChemicalFromOcr(
+  rawText: string,
+  hints?: { name?: string | null; catalogNumber?: string | null; casNumber?: string | null; labelState?: PhysicalState | null; manufacturer?: string | null },
+): Promise<PubChemMatch | null> {
+  try {
+    const response = await fetch("/api/resolve-ocr", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ocrText: rawText, ...hints }),
+    });
+    if (!response.ok) return null;
+    const result = (await response.json()) as ChemicalLookupResponse;
+    if (!result?.name) return null;
+    return toPublicMatch(result);
+  } catch {
+    return null;
   }
-  return best;
 }
 
 export async function lookupChemicalEverywhere(
@@ -83,6 +97,7 @@ function toPublicMatch(result: ChemicalLookupResponse): PubChemMatch {
     physicalState: result.physicalState,
     confidence: result.confidence,
     reviewRequired: result.reviewRequired,
+    categories: result.categories,
   };
 }
 

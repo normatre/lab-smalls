@@ -1,5 +1,5 @@
-import type { DetectedChemical, PhysicalState, Unit } from "@/types/lab-smalls";
-import { lookupChemicalEverywhere, lookupPubChemFromText } from "@/services/pubChem";
+import type { DetectedChemical, OcrCategories, PhysicalState, Unit } from "@/types/lab-smalls";
+import { lookupChemicalEverywhere, lookupChemicalFromOcr, lookupPubChemFromText } from "@/services/pubChem";
 
 export type ChemicalVisionService = {
   analyzeChemicalImage(image: File | Blob, options?: { openAiApiKey?: string }): Promise<{ items: DetectedChemical[]; warnings: string[] }>;
@@ -99,6 +99,7 @@ const detected = ({
   catalogNumber = null,
   source = "label",
   ocrOutput,
+  ocrCategories,
 }: {
   name: string;
   quantity: number | null;
@@ -112,6 +113,7 @@ const detected = ({
   catalogNumber?: string | null;
   source?: FieldSource;
   ocrOutput?: string;
+  ocrCategories?: OcrCategories;
 }): DetectedChemical => ({
   chemicalName: sourced(name, confidence, source),
   quantity: sourced(quantity, quantity ? Math.min(0.92, confidence + 0.08) : 0.35, quantity ? "label" : "image"),
@@ -121,12 +123,13 @@ const detected = ({
   confidence,
   sourceImage: "ocr-upload",
   ocrOutput: cleanOcrOutput(ocrOutput),
+  ocrCategories,
 });
 
 export class MockChemicalVisionService implements ChemicalVisionService {
   async analyzeChemicalImage(image: File | Blob, options?: { openAiApiKey?: string }): Promise<{ items: DetectedChemical[]; warnings: string[] }> {
     await new Promise((resolve) => setTimeout(resolve, 350));
-    const [profile, ocr] = await Promise.all([profileImage(image), readLabelText(image)]);
+    const ocr = await readLabelText(image);
     const parsed = await parseLabelText(ocr.text);
 
     if (parsed.item && parsed.item.confidence >= 0.72 && parsed.warnings.some((warning) => warning.startsWith("Identity validated"))) {
@@ -151,7 +154,10 @@ export class MockChemicalVisionService implements ChemicalVisionService {
       };
     }
 
-    return fallbackByBottleProfile(profile, ocr.text);
+    return {
+      items: [],
+      warnings: ["No database-validated chemical identity was found. Nothing was added to the drum; retake the label photo closer and straighter."],
+    };
   }
 }
 
@@ -164,6 +170,8 @@ type VisionExtract = {
   physicalStateEvidence?: "label" | "product-name" | "inferred" | "none" | null;
   casNumber?: string | null;
   catalogNumber?: string | null;
+  manufacturer?: string | null;
+  ocrLines?: string[] | null;
   confidence?: number | null;
 };
 
@@ -179,10 +187,20 @@ async function analyzeWithOpenAIVision(image: File | Blob, apiKey?: string): Pro
     const statedState = extracted.physicalStateEvidence === "label" || extracted.physicalStateEvidence === "product-name"
       ? normalizeState(extracted.physicalState)
       : null;
+    const rawOcrText = extracted.ocrLines?.filter(Boolean).join("\n") || outputText;
     const catalogReference = findChemicalByCatalog(extracted.catalogNumber ?? "");
-    const pubChem = await lookupChemicalEverywhere(catalogReference?.name ?? extracted.chemicalName, extracted.casNumber ?? catalogReference?.cas, statedState);
+    const pubChem = await lookupChemicalFromOcr(rawOcrText, {
+      name: catalogReference?.name ?? extracted.chemicalName,
+      catalogNumber: extracted.catalogNumber,
+      casNumber: extracted.casNumber ?? catalogReference?.cas,
+      labelState: statedState,
+      manufacturer: extracted.manufacturer,
+    });
     const confidentMatch = pubChem && pubChem.confidence >= 0.86 && !pubChem.reviewRequired ? pubChem : null;
-    const name = catalogReference?.name ?? confidentMatch?.name ?? cleanChemicalNameCandidate(extracted.chemicalName);
+    const name = catalogReference?.name ?? confidentMatch?.name;
+    if (!name) {
+      return { items: [], warnings: ["OCR text was categorised, but no chemical name was confirmed by PubChem, Sigma-Aldrich, Merck, EPA CompTox, or ECHA. Nothing was added."] };
+    }
     const state = statedState ?? catalogReference?.state ?? pubChem?.physicalState ?? "Unknown";
     const unit = normalizeUnit(extracted.unit);
     const confidence = Math.max(0.45, Math.min(0.98, Math.min(extracted.confidence ?? 0.8, pubChem?.confidence ?? 0.8)));
@@ -190,7 +208,7 @@ async function analyzeWithOpenAIVision(image: File | Blob, apiKey?: string): Pro
     return {
       warnings: [
         "The prominent label name was read first. Operator confirmation is still required.",
-        catalogReference ? `Identity validated from product catalogue ${extracted.catalogNumber}.` : confidentMatch ? `Identity validated with ${confidentMatch.source}.` : "No sufficiently confident database match was found; the label name was preserved for manual review.",
+        catalogReference ? `Identity validated from product catalogue ${extracted.catalogNumber}.` : `Identity validated with ${confidentMatch?.source}.`,
       ],
       items: [
         detected({
@@ -201,7 +219,8 @@ async function analyzeWithOpenAIVision(image: File | Blob, apiKey?: string): Pro
           state,
           confidence,
           source: "database",
-          ocrOutput: outputText,
+          ocrOutput: rawOcrText,
+          ocrCategories: pubChem?.categories,
         }),
       ],
     };
@@ -228,7 +247,7 @@ async function requestVisionExtraction(imageUrl: string, apiKey?: string): Promi
             content: [
               {
                 type: "input_text",
-                text: "Read this lab chemical container label. First locate the manufacturer banner, then read the first large bold black product-name line immediately below or beside the catalogue/pack code. That exact English product line is chemicalName. Never use the manufacturer (such as Sigma-Aldrich, Merck), a translated synonym below the main name, a solvent-only fragment such as Methanol Solution, or a shortened fragment such as Silyl Chloride. If the label says Boron trifluoride-methanol solution or Boron trifluoride in methanol, chemicalName must be Boron Trifluoride Methanol Solution, not Methanol Solution. Also read the catalogue number separately; for a code such as 92337-5ML return catalogNumber 92337, quantity 1, containerSize 5, unit mL, while 89595-10X1ML means catalogNumber 89595, quantity 10, containerSize 1, unit mL. Ignore lot, purity/grade, hazard text and pictograms. Preserve commercial reagent names. Return only compact JSON with keys: chemicalName, catalogNumber, quantity, containerSize, unit, physicalState, physicalStateEvidence, casNumber, confidence. physicalStateEvidence must be label, product-name, inferred, or none. unit must be g, kg, mL, or L. physicalState must be Solid, Liquid, Gas, or Unknown. Use Unknown rather than guessing.",
+                text: "Transcribe this lab chemical label before identifying it. Return every legible text line in ocrLines, then propose the exact main English product name. Distinguish manufacturer, catalogue/pack code, CAS, lot, purity/grade, package size, and the large bold product-name line. Never use Sigma-Aldrich, Merck, a translated synonym, solvent-only fragment, or hazard wording as the chemical name. Do not invent missing letters. Return only compact JSON with keys: ocrLines, chemicalName, manufacturer, catalogNumber, quantity, containerSize, unit, physicalState, physicalStateEvidence, casNumber, confidence. unit must be g, kg, mL, or L; physicalState must be Solid, Liquid, Gas, or Unknown.",
               },
               { type: "input_image", image_url: imageUrl },
             ],
@@ -420,11 +439,11 @@ async function parseLabelText(text: string): Promise<{ item: DetectedChemical | 
   const labelName = extractLikelyLabelName(text);
   const usableReference = reference && (catalogReference === reference || !namesConflict(labelName, reference.name)) ? reference : null;
   const usableDatabase = pubChem && pubChem.confidence >= 0.86 && !pubChem.reviewRequired && !namesConflict(labelName, pubChem.name) ? pubChem : null;
-  const name = labProduct?.name ?? usableDatabase?.name ?? usableReference?.name ?? labelName;
+  const name = labProduct?.name ?? usableDatabase?.name ?? usableReference?.name ?? null;
   const confidence = scoreExtraction(Boolean(name), Boolean(size), Boolean(quantity), state !== "Unknown", Boolean(pubChem) || Boolean(labProduct));
 
-  if (!name && !size) {
-    return { item: null, warnings: [`OCR text read, but no known chemical name or size was confidently found: "${trimForWarning(text)}"`] };
+  if (!name) {
+    return { item: null, warnings: [`OCR text was read, but no chemical identity was validated against the configured databases: "${trimForWarning(text)}"`] };
   }
 
   return {
@@ -445,6 +464,7 @@ async function parseLabelText(text: string): Promise<{ item: DetectedChemical | 
       confidence,
       source: usableDatabase || usableReference ? "database" : "image",
       ocrOutput: text,
+      ocrCategories: pubChem?.categories,
     }),
   };
 }
