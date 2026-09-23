@@ -84,10 +84,17 @@ async function handleResolveOcr(request, env) {
 
 async function resolveCategorizedIdentity(categories, hints, env) {
   const catalogNumbers = [...new Set([hints.catalogNumber, ...categories.catalogNumbers].filter(Boolean))];
-  const brandText = [hints.manufacturer, ...categories.brands].join(" ");
-  for (const catalogNumber of catalogNumbers.slice(0, 3)) {
-    const vendor = await lookupOfficialVendorProduct(catalogNumber, brandText);
-    if (!vendor) continue;
+  let vendor = null;
+  for (const source of ["Sigma-Aldrich", "Merck"]) {
+    for (const catalogNumber of catalogNumbers.slice(0, 3)) {
+      vendor = await lookupOfficialVendorProduct(catalogNumber, source);
+      if (vendor) {
+        break;
+      }
+    }
+    if (vendor) break;
+  }
+  if (vendor) {
     const pubChem = await lookupPubChem(vendor.name, vendor.casNumber || hints.casNumber);
     if (pubChem && (pubChem.confidence >= 0.86 || vendor.casNumber === pubChem.casNumber)) {
       return {
@@ -186,19 +193,19 @@ function scoreChemicalCandidate(value) {
   return score;
 }
 
-async function lookupOfficialVendorProduct(catalogNumber, brandText) {
+async function lookupOfficialVendorProduct(catalogNumber, source) {
   const compact = catalogNumber.replace(/[^A-Za-z0-9]/g, "").toLowerCase();
   if (compact.length < 4) return null;
-  const preferredBrands = /\bmerck|millipore\b/i.test(brandText)
-    ? ["mm", "sial", "aldrich", "supelco"]
-    : ["sial", "aldrich", "supelco", "mm"];
-  const pages = await Promise.all(preferredBrands.map(async (brand) => {
+  const brands = source === "Sigma-Aldrich" ? ["sial", "aldrich", "supelco"] : ["mm"];
+  const pages = await Promise.all(brands.map(async (brand) => {
     const url = `https://www.sigmaaldrich.com/GB/en/product/${brand}/${compact}`;
     const html = await fetchText(url, 7500);
-    return html ? parseOfficialProductPage(html, catalogNumber, brand === "mm" ? "Merck" : "Sigma-Aldrich") : null;
+    return html ? parseOfficialProductPage(html, catalogNumber, source) : null;
   }));
   const product = pages.find(Boolean);
   if (product) return product;
+
+  if (source !== "Merck") return null;
 
   const merckUrl = `https://www.merckmillipore.com/GB/en/search/${encodeURIComponent(catalogNumber)}?searchterm=${encodeURIComponent(catalogNumber)}`;
   const merckHtml = await fetchText(merckUrl, 7500);
