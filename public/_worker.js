@@ -65,11 +65,13 @@ async function handleResolveOcr(request, env) {
     const categories = categorizeOcrText(ocrText, hints);
     const result = await resolveCategorizedIdentity(categories, hints, env);
     if (!result) {
+      const fallbackName = [...new Set([hints.name, ...categories.chemicalCandidates].filter(Boolean))]
+        .sort((left, right) => scoreChemicalCandidate(right) - scoreChemicalCandidate(left))[0] || "";
       return json({
-        name: "",
-        source: "Unverified OCR",
+        name: fallbackName,
+        source: "OCR (unverified)",
         physicalState: hints.labelState,
-        confidence: 0,
+        confidence: fallbackName ? 0.58 : 0,
         reviewRequired: true,
         categories,
       });

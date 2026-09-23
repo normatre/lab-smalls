@@ -156,7 +156,7 @@ export class MockChemicalVisionService implements ChemicalVisionService {
 
     return {
       items: [],
-      warnings: ["No database-validated chemical identity was found. Nothing was added to the drum; retake the label photo closer and straighter."],
+      warnings: ["No chemical name could be read from the label. Retake the photo closer and straighter."],
     };
   }
 }
@@ -197,9 +197,10 @@ async function analyzeWithOpenAIVision(image: File | Blob, apiKey?: string): Pro
       manufacturer: extracted.manufacturer,
     });
     const confidentMatch = pubChem && pubChem.confidence >= 0.86 && !pubChem.reviewRequired ? pubChem : null;
-    const name = catalogReference?.name ?? confidentMatch?.name;
+    const fallbackName = pubChem?.name ?? cleanChemicalNameCandidate(extracted.chemicalName);
+    const name = catalogReference?.name ?? confidentMatch?.name ?? fallbackName;
     if (!name) {
-      return { items: [], warnings: ["OCR text was categorised, but no chemical name was confirmed by PubChem, Sigma-Aldrich, Merck, EPA CompTox, or ECHA. Nothing was added."] };
+      return { items: [], warnings: ["OCR did not produce a usable chemical or product name. Retake the label photo closer and straighter."] };
     }
     const state = statedState ?? catalogReference?.state ?? pubChem?.physicalState ?? "Unknown";
     const unit = normalizeUnit(extracted.unit);
@@ -208,7 +209,11 @@ async function analyzeWithOpenAIVision(image: File | Blob, apiKey?: string): Pro
     return {
       warnings: [
         "The prominent label name was read first. Operator confirmation is still required.",
-        catalogReference ? `Identity validated from product catalogue ${extracted.catalogNumber}.` : `Identity validated with ${confidentMatch?.source}.`,
+        catalogReference
+          ? `Identity validated from product catalogue ${extracted.catalogNumber}.`
+          : confidentMatch
+            ? `Identity validated with ${confidentMatch.source}.`
+            : "No database match was found. The closest OCR name and label size were added for manual review.",
       ],
       items: [
         detected({
@@ -218,7 +223,7 @@ async function analyzeWithOpenAIVision(image: File | Blob, apiKey?: string): Pro
           unit,
           state,
           confidence,
-          source: "database",
+          source: catalogReference || confidentMatch ? "database" : "image",
           ocrOutput: rawOcrText,
           ocrCategories: pubChem?.categories,
         }),
@@ -439,7 +444,8 @@ async function parseLabelText(text: string): Promise<{ item: DetectedChemical | 
   const labelName = extractLikelyLabelName(text);
   const usableReference = reference && (catalogReference === reference || !namesConflict(labelName, reference.name)) ? reference : null;
   const usableDatabase = pubChem && pubChem.confidence >= 0.86 && !pubChem.reviewRequired && !namesConflict(labelName, pubChem.name) ? pubChem : null;
-  const name = labProduct?.name ?? usableDatabase?.name ?? usableReference?.name ?? null;
+  const fallbackName = pubChem?.reviewRequired ? pubChem.name : labelName;
+  const name = labProduct?.name ?? usableDatabase?.name ?? usableReference?.name ?? fallbackName ?? null;
   const confidence = scoreExtraction(Boolean(name), Boolean(size), Boolean(quantity), state !== "Unknown", Boolean(pubChem) || Boolean(labProduct));
 
   if (!name) {
@@ -448,10 +454,10 @@ async function parseLabelText(text: string): Promise<{ item: DetectedChemical | 
 
   return {
     warnings: [
-      !reference && !pubChem && !labProduct ? "Chemical/product name was not matched to the built-in catalogues or external databases." : "",
+      !usableDatabase && !usableReference && !labProduct ? "No database match was found. The closest OCR name and label size were added for manual review." : "",
       labProduct ? `Matched lab product catalogue${catalogNumber ? ` (${catalogNumber})` : ""}.` : "",
       usableDatabase ? `Identity validated with ${usableDatabase.source}.` : catalogReference ? "Identity validated from the product catalogue number." : usableReference ? "Identity validated with the local chemical reference cache." : "",
-      pubChem && !usableDatabase ? `Rejected conflicting database match (${pubChem.name}) because the label name looked more specific.` : "",
+      pubChem && !usableDatabase && !pubChem.reviewRequired ? `Rejected conflicting database match (${pubChem.name}) because the label name looked more specific.` : "",
       !size ? "Container size was not found on the label." : "",
       state === "Unknown" ? "Physical state could not be inferred from label/catalogue." : "",
     ].filter(Boolean),
@@ -462,7 +468,7 @@ async function parseLabelText(text: string): Promise<{ item: DetectedChemical | 
       unit: size?.unit ?? null,
       state,
       confidence,
-      source: usableDatabase || usableReference ? "database" : "image",
+      source: usableDatabase || usableReference || labProduct ? "database" : "image",
       ocrOutput: text,
       ocrCategories: pubChem?.categories,
     }),
