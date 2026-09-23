@@ -1,5 +1,5 @@
 const visionPrompt =
-  "Transcribe this lab chemical label before identifying it. Return every legible text line in ocrLines. Separately identify manufacturer, catalogue/pack code, CAS, lot, purity/grade, package size, and the large bold English product-name line. Never use Sigma-Aldrich, Merck, a translated synonym, solvent-only fragment, shortened fragment, or hazard wording as chemicalName. Do not invent missing letters. Return only compact JSON with keys: ocrLines, chemicalName, manufacturer, catalogNumber, quantity, containerSize, unit, physicalState, physicalStateEvidence, casNumber, confidence. unit must be g, kg, mL, or L. physicalState must be Solid, Liquid, Gas, or Unknown. Use Unknown rather than guessing.";
+  "Transcribe this lab chemical label before identifying it. Return every legible text line in ocrLines. Separately identify manufacturer, catalogue/pack code, CAS, lot, purity/grade, package size, and the large bold English product-name line. chemicalName must contain only the English product or chemical name. Ignore German, French, Italian, Spanish, Dutch, Polish, and other translated name lines even when they are clearer. Never use Sigma-Aldrich, Merck, a translated synonym, solvent-only fragment, shortened fragment, or hazard wording as chemicalName. If no English name is readable, set chemicalName to null. Do not invent missing letters. Return only compact JSON with keys: ocrLines, chemicalName, manufacturer, catalogNumber, quantity, containerSize, unit, physicalState, physicalStateEvidence, casNumber, confidence. unit must be g, kg, mL, or L. physicalState must be Solid, Liquid, Gas, or Unknown. Use Unknown rather than guessing.";
 
 const worker = {
   async fetch(request, env) {
@@ -66,6 +66,7 @@ async function handleResolveOcr(request, env) {
     const result = await resolveCategorizedIdentity(categories, hints, env);
     if (!result) {
       const fallbackName = [...new Set([hints.name, ...categories.chemicalCandidates].filter(Boolean))]
+        .filter((candidate) => !isLikelyNonEnglishChemicalName(candidate))
         .sort((left, right) => scoreChemicalCandidate(right) - scoreChemicalCandidate(left))[0] || "";
       return json({
         name: fallbackName,
@@ -177,6 +178,7 @@ function categorizeOcrText(ocrText, hints) {
 
 function cleanOcrChemicalCandidate(line) {
   const candidate = line
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
     .replace(/^\s*[A-Z]?\d[\d.]{3,}[A-Z]?\s*-\s*(?:\d+\s*[X×]\s*)?\d+(?:[.,]\d+)?\s*(?:ML|G|KG|L)\s*/i, "")
     .replace(/\b(?:puriss?|purum|reagent|grade|assay|ACS|GC|HPLC)\b.*$/i, "")
     .replace(/[^A-Za-z0-9,+().'\-\s]/g, " ").replace(/\s+/g, " ").trim();
@@ -191,6 +193,12 @@ function scoreChemicalCandidate(value) {
   if (/^[A-Za-z][A-Za-z0-9,+'().\-\s]{7,}$/.test(value)) score += 15;
   if (/\b(?:lot|batch|sigma|aldrich|merck|puriss?|grade|store|warning)\b/i.test(value)) score -= 80;
   return score;
+}
+
+function isLikelyNonEnglishChemicalName(value) {
+  const lower = value.toLowerCase();
+  return /\b(?:chlorid|bromid|jodid|fluorid|saure|säure|losung|lösung|wasserfrei|chlorure|bromure|acide|anhydre|cloruro|bromuro|acido|ácido|soluzione|oplossing|zuur|chlorek|roztwor|roztwór|kwas)\b/i.test(lower)
+    || /\b[a-z-]*(?:chlorsilan|clorosilan(?:o)?|chloorsilaan|siloxan|siloxano|silan|silano)\b/i.test(lower);
 }
 
 async function lookupOfficialVendorProduct(catalogNumber, source) {

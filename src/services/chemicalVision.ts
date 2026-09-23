@@ -197,7 +197,8 @@ async function analyzeWithOpenAIVision(image: File | Blob, apiKey?: string): Pro
       manufacturer: extracted.manufacturer,
     });
     const confidentMatch = pubChem && pubChem.confidence >= 0.86 && !pubChem.reviewRequired ? pubChem : null;
-    const fallbackName = pubChem?.name ?? cleanChemicalNameCandidate(extracted.chemicalName);
+    const visionName = cleanChemicalNameCandidate(extracted.chemicalName);
+    const fallbackName = pubChem?.name ?? (!isLikelyNonEnglishChemicalName(visionName) ? visionName : "");
     const name = catalogReference?.name ?? confidentMatch?.name ?? fallbackName;
     if (!name) {
       return { items: [], warnings: ["OCR did not produce a usable chemical or product name. Retake the label photo closer and straighter."] };
@@ -252,7 +253,7 @@ async function requestVisionExtraction(imageUrl: string, apiKey?: string): Promi
             content: [
               {
                 type: "input_text",
-                text: "Transcribe this lab chemical label before identifying it. Return every legible text line in ocrLines, then propose the exact main English product name. Distinguish manufacturer, catalogue/pack code, CAS, lot, purity/grade, package size, and the large bold product-name line. Never use Sigma-Aldrich, Merck, a translated synonym, solvent-only fragment, or hazard wording as the chemical name. Do not invent missing letters. Return only compact JSON with keys: ocrLines, chemicalName, manufacturer, catalogNumber, quantity, containerSize, unit, physicalState, physicalStateEvidence, casNumber, confidence. unit must be g, kg, mL, or L; physicalState must be Solid, Liquid, Gas, or Unknown.",
+                text: "Transcribe this lab chemical label before identifying it. Return every legible text line in ocrLines, then propose the exact main English product name. chemicalName must contain only the English product or chemical name. Ignore German, French, Italian, Spanish, Dutch, Polish, and other translated name lines even when they are clearer. Distinguish manufacturer, catalogue/pack code, CAS, lot, purity/grade, package size, and the large bold product-name line. Never use Sigma-Aldrich, Merck, a translated synonym, solvent-only fragment, or hazard wording as the chemical name. If no English name is readable, set chemicalName to null. Do not invent missing letters. Return only compact JSON with keys: ocrLines, chemicalName, manufacturer, catalogNumber, quantity, containerSize, unit, physicalState, physicalStateEvidence, casNumber, confidence. unit must be g, kg, mL, or L; physicalState must be Solid, Liquid, Gas, or Unknown.",
               },
               { type: "input_image", image_url: imageUrl },
             ],
@@ -361,8 +362,8 @@ async function buildOcrVariants(image: File | Blob, objectUrl: string) {
 
 function chooseConsensusChemicalName(texts: string[]) {
   const candidates = texts.flatMap((text) => text.split(/\r?\n/))
-    .map((line) => cleanChemicalNameCandidate(line.replace(/[^a-zA-Z0-9+,\-.\s]/g, " ").replace(/\s+/g, " ").trim()))
-    .filter((line) => line.length >= 7 && line.length <= 64 && !isLabelNoise(line));
+    .map((line) => cleanChemicalNameCandidate(line.normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-zA-Z0-9+,\-.\s]/g, " ").replace(/\s+/g, " ").trim()))
+    .filter((line) => line.length >= 7 && line.length <= 64 && !isLabelNoise(line) && !isLikelyNonEnglishChemicalName(line));
   let best = "";
   let bestScore = -Infinity;
   for (const candidate of candidates) {
@@ -572,7 +573,7 @@ function extractCatalogNumber(text: string) {
 function extractLikelyLabelName(text: string) {
   const lines = text
     .split(/\r?\n/)
-    .map((line) => line.replace(/[|()[\]{}]/g, " ").replace(/[^a-zA-Z0-9+,\-.\s]/g, " ").replace(/\s+/g, " ").trim())
+    .map((line) => line.normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[|()[\]{}]/g, " ").replace(/[^a-zA-Z0-9+,\-.\s]/g, " ").replace(/\s+/g, " ").trim())
     .filter(Boolean);
   const candidates = [
     ...lines,
@@ -582,7 +583,7 @@ function extractLikelyLabelName(text: string) {
     .flatMap((line) => [line, ...line.split(/[,;]/)])
     .map(cleanChemicalNameCandidate)
     .filter((line) => line.length >= 5 && line.length <= 64)
-    .filter((line) => !isLabelNoise(line));
+    .filter((line) => !isLabelNoise(line) && !isLikelyNonEnglishChemicalName(line));
   const best = candidates.sort((a, b) => scoreLabelName(b) - scoreLabelName(a))[0];
   return best ? titleCaseChemicalName(best) : null;
 }
@@ -608,6 +609,12 @@ function isLabelNoise(line: string) {
   if (/\b\d+(?:[.,]\d+)?\s*(?:kg|g|ml|l)\b/i.test(lower) && !/\b(?:solution|acid|alcohol|serum|medium|buffer)\b/i.test(lower)) return true;
   if (/^\W*\d/.test(line) && !/\b(?:acid|alcohol|serum|medium|buffer|solution)\b/i.test(line)) return true;
   return false;
+}
+
+function isLikelyNonEnglishChemicalName(value: string) {
+  const lower = value.toLowerCase();
+  return /\b(?:chlorid|bromid|jodid|fluorid|saure|säure|losung|lösung|wasserfrei|chlorure|bromure|acide|anhydre|cloruro|bromuro|acido|ácido|soluzione|oplossing|zuur|chlorek|roztwor|roztwór|kwas)\b/i.test(lower)
+    || /\b[a-z-]*(?:chlorsilan|clorosilan(?:o)?|chloorsilaan|siloxan|siloxano|silan|silano)\b/i.test(lower);
 }
 
 function scoreLabelName(line: string) {
