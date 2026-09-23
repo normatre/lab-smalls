@@ -296,7 +296,7 @@ function DuplicateReview({ items, onMerge }: { items: InventoryItem[]; onMerge: 
 function ScanResultCard({ item, allItems, onUpdate, onDelete, products, saveProduct }: { item: InventoryItem; allItems: InventoryItem[]; onUpdate: (item: InventoryItem) => void; onDelete: () => void; products: Product[]; saveProduct: (product: Product) => void }) {
   const [expanded, setExpanded] = useState(item.status !== "Confirmed" || item.chemicalName.value === "UNKNOWN PRODUCT");
   const needsReview = itemNeedsReview(item);
-  const suggestions = buildNameSuggestions(item, products, allItems);
+  const suggestions = buildNameSuggestions(item);
   const duplicate = findSimilarItem(item, allItems);
   const updateName = (value: string, source: "user" | "database" = "user") => {
     rememberCorrection(item, value);
@@ -366,18 +366,41 @@ function correctionSignature(item: InventoryItem, fallbackName: string) {
   const raw = item.ocrOutput ? normalizeName(item.ocrOutput).slice(0, 120) : "";
   return normalizeName([catalog, fallbackName, raw].filter(Boolean).join("|"));
 }
-function buildNameSuggestions(item: InventoryItem, products: Product[], allItems: InventoryItem[]) {
+function buildNameSuggestions(item: InventoryItem) {
   const learned = readCorrections()
     .filter((correction) => correctionMatchesItem(correction, item))
     .map((correction) => correction.to);
-  const chemicalCandidates = item.ocrCategories?.chemicalCandidates ?? [];
-  const productMatches = products.map((product) => product.canonicalName);
-  const similar = allItems
-    .filter((current) => current.id !== item.id && current.chemicalName.value && nameSimilarity(current.chemicalName.value, item.chemicalName.value ?? "") >= 0.68)
-    .map((current) => current.chemicalName.value ?? "");
-  return uniqueNames([...(item.chemicalName.value ? [item.chemicalName.value] : []), ...learned, ...chemicalCandidates, ...productMatches, ...similar])
+  const chemicalCandidates = [
+    ...(item.ocrCategories?.chemicalCandidates ?? []),
+    ...extractOcrNameCandidates(item.ocrOutput ?? ""),
+  ];
+  return uniqueNames([...(item.chemicalName.value ? [item.chemicalName.value] : []), ...learned, ...chemicalCandidates])
     .filter((name) => name.length >= 4 && normalizeName(name) !== "unknown product")
     .slice(0, 5);
+}
+function extractOcrNameCandidates(text: string) {
+  const lines = text
+    .split(/\r?\n/)
+    .flatMap((line) => [line, ...line.split(/[,;]/)])
+    .map((line) => line.replace(/[^a-zA-Z0-9+,\-.\s]/g, " ").replace(/\s+/g, " ").trim())
+    .filter(isOcrNameCandidate);
+  return lines.sort((left, right) => scoreOcrNameCandidate(right) - scoreOcrNameCandidate(left));
+}
+function isOcrNameCandidate(line: string) {
+  const lower = line.toLowerCase();
+  if (line.length < 5 || line.length > 80) return false;
+  if (/\b(?:lot|batch|exp|expiry|catalog|catalogue|cat|product|warning|danger|only|sigma|aldrich|merck|millipore|fisher|store|storage|temperature)\b/.test(lower)) return false;
+  if (/^\W*\d/.test(line) && !/\b(?:acid|alcohol|serum|medium|buffer|solution|chloride|sulfate|sulphate|hydroxide|carbonate|nitrate|trifluoride|methanol|ethanol)\b/i.test(line)) return false;
+  return /\b(?:acid|alcohol|serum|medium|buffer|solution|chloride|bromide|iodide|sulfate|sulphate|sulfonate|hydroxide|carbonate|nitrate|oxide|peroxide|trifluoride|methanol|ethanol|acetone|sodium|potassium|calcium|boron)\b/i.test(line);
+}
+function scoreOcrNameCandidate(line: string) {
+  const lower = line.toLowerCase();
+  let score = 0;
+  if (/\b(?:acid|solution|chloride|sulfate|sulphate|hydroxide|carbonate|nitrate|trifluoride)\b/.test(lower)) score += 35;
+  if (line.split(/\s+/).length >= 2) score += 20;
+  if (/\b(?:reagent|grade|acs|lot|exp)\b/.test(lower)) score -= 40;
+  if (/\d+(?:[.,]\d+)?\s*(?:g|kg|ml|l)\b/i.test(line)) score -= 15;
+  return score;
 }
 function findDuplicatePairs(items: InventoryItem[]) {
   const pairs: Array<[InventoryItem, InventoryItem]> = [];
