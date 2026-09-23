@@ -16,6 +16,7 @@ const navItems: { label: View; icon: typeof Home }[] = [
 const units: Unit[] = ["g", "kg", "mL", "L"];
 const states: PhysicalState[] = ["Solid", "Liquid", "Gas", "Unknown"];
 const storageKey = "lab-smalls-scanner-state-v2";
+const correctionKey = "lab-smalls-scanner-corrections-v1";
 
 export default function HomePage() {
   const [view, setView] = useState<View>("Dashboard");
@@ -109,7 +110,7 @@ export default function HomePage() {
           {view === "Active Drums" && <ActiveDrums drums={activeDrums} selected={selectedDrum} onSelect={setSelectedDrumId} onDelete={deleteDrum} onUpdate={updateDrum} products={products} saveProduct={(product) => setProducts((current) => [product, ...current])} openAiApiKey={openAiApiKey} />}
           {view === "History" && <HistoryView drums={completedDrums.length ? completedDrums : drums} onDelete={deleteDrum} onOpen={(id) => { setSelectedDrumId(id); setView("Active Drums"); }} />}
           {view === "PubChem Database" && <ProductDatabase products={products} />}
-          {view === "Settings" && <SettingsView retention={retention} setRetention={setRetention} role={role} openAiApiKey={openAiApiKey} setOpenAiApiKey={setOpenAiApiKey} resetDemo={() => { localStorage.removeItem(storageKey); setDrums([]); setProducts([]); setOpenAiApiKey(""); setSelectedDrumId(""); }} />}
+          {view === "Settings" && <SettingsView retention={retention} setRetention={setRetention} role={role} openAiApiKey={openAiApiKey} setOpenAiApiKey={setOpenAiApiKey} resetDemo={() => { localStorage.removeItem(storageKey); localStorage.removeItem(correctionKey); setDrums([]); setProducts([]); setOpenAiApiKey(""); setSelectedDrumId(""); }} />}
         </section>
       </div>
       <nav className="fixed inset-x-0 bottom-0 z-40 grid grid-cols-5 border-t border-slate-200 bg-white lg:hidden">
@@ -175,7 +176,7 @@ function CameraScanner({ drum, onUpdate, openAiApiKey }: { drum: Drum; onUpdate:
       const { analysisImage, preview } = await prepareCameraImage(file);
       const result = await chemicalVisionService.analyzeChemicalImage(analysisImage, { openAiApiKey: openAiApiKey.trim() || undefined });
       const imageId = crypto.randomUUID();
-      const additions: InventoryItem[] = result.items.map((item) => ({ ...item, id: crypto.randomUUID(), sourceImageIds: [imageId], status: item.chemicalName.value === "UNKNOWN PRODUCT" ? "Unknown" : "Review Required" }));
+      const additions: InventoryItem[] = result.items.map((item) => applyLearnedCorrection({ ...item, id: crypto.randomUUID(), sourceImageIds: [imageId], status: item.chemicalName.value === "UNKNOWN PRODUCT" ? "Unknown" : "Review Required" }));
       const scanImages = [preview, ...(drum.scanImages ?? [])].slice(0, 8);
       const scanImageIds = [imageId, ...(drum.scanImageIds ?? [])].slice(0, 8);
       onUpdate({ ...drum, imagesScanned: scanImages.length, scanImages, scanImageIds, scanWarnings: result.warnings, items: mergeDuplicateItems([...drum.items, ...additions]) });
@@ -281,20 +282,35 @@ function ReviewSection({ drum, onUpdate, products, saveProduct }: { drum: Drum; 
   const addManual = () => onUpdate({ ...drum, items: [{ id: crypto.randomUUID(), chemicalName: field("", 1, "user"), quantity: field(1, 1, "user"), containerSize: field(1, 1, "user"), unit: field("L", 1, "user"), physicalState: field("Unknown", 1, "user"), confidence: 1, status: "Review Required" }, ...drum.items] });
   const visibleItems = reviewOnly ? drum.items.filter(itemNeedsReview) : drum.items;
   const confirmSafe = () => onUpdate({ ...drum, items: drum.items.map((item) => itemNeedsReview(item) ? item : { ...item, status: "Confirmed" }) });
-  return <Panel title="Review Items"><div id="review" className="mb-3 flex flex-wrap gap-3"><button onClick={addManual} className="touch-button bg-slate-900 text-white"><Plus size={20} />ADD MANUALLY</button><button onClick={() => onUpdate({ ...drum, items: mergeDuplicateItems(drum.items) })} className="touch-button border border-slate-300 bg-white">Combine duplicates</button><button onClick={() => setReviewOnly((value) => !value)} className="touch-button border border-slate-300 bg-white"><Filter size={20} />{reviewOnly ? "Show all" : "Review only"}</button><button onClick={confirmSafe} className="touch-button border border-emerald-300 bg-white text-emerald-800"><CheckCircle2 size={20} />Confirm safe items</button></div><div className="grid gap-3">{visibleItems.map((item) => <ScanResultCard key={item.id} item={item} onUpdate={updateItem} onDelete={() => deleteItem(item)} products={products} saveProduct={saveProduct} />)}{visibleItems.length === 0 && <p className="rounded-lg border border-emerald-200 bg-emerald-50 p-4 font-semibold text-emerald-800">No items need review.</p>}</div></Panel>;
+  return <Panel title="Review Items"><div id="review" className="mb-3 flex flex-wrap gap-3"><button onClick={addManual} className="touch-button bg-slate-900 text-white"><Plus size={20} />ADD MANUALLY</button><button onClick={() => onUpdate({ ...drum, items: mergeDuplicateItems(drum.items) })} className="touch-button border border-slate-300 bg-white">Combine duplicates</button><button onClick={() => setReviewOnly((value) => !value)} className="touch-button border border-slate-300 bg-white"><Filter size={20} />{reviewOnly ? "Show all" : "Review only"}</button><button onClick={confirmSafe} className="touch-button border border-emerald-300 bg-white text-emerald-800"><CheckCircle2 size={20} />Confirm safe items</button></div><DuplicateReview items={drum.items} onMerge={() => onUpdate({ ...drum, items: mergeDuplicateItems(drum.items) })} /><div className="grid gap-3">{visibleItems.map((item) => <ScanResultCard key={item.id} item={item} allItems={drum.items} onUpdate={updateItem} onDelete={() => deleteItem(item)} products={products} saveProduct={saveProduct} />)}{visibleItems.length === 0 && <p className="rounded-lg border border-emerald-200 bg-emerald-50 p-4 font-semibold text-emerald-800">No items need review.</p>}</div></Panel>;
 }
 
 function itemNeedsReview(item: InventoryItem) {
   return item.status !== "Confirmed" || item.chemicalName.value === "UNKNOWN PRODUCT" || !item.chemicalName.value || !item.quantity.value || !item.containerSize.value || !item.unit.value || item.physicalState.value === "Unknown" || confidenceNeedsReview(item.confidence);
 }
-function ScanResultCard({ item, onUpdate, onDelete, products, saveProduct }: { item: InventoryItem; onUpdate: (item: InventoryItem) => void; onDelete: () => void; products: Product[]; saveProduct: (product: Product) => void }) {
+function DuplicateReview({ items, onMerge }: { items: InventoryItem[]; onMerge: () => void }) {
+  const pairs = findDuplicatePairs(items).slice(0, 3);
+  if (pairs.length === 0) return null;
+  return <div className="mb-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950"><div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"><div><strong>Possible duplicate items</strong><p className="mt-1 font-semibold">{pairs.map(([left, right]) => `${left.chemicalName.value} / ${right.chemicalName.value}`).join(" · ")}</p></div><button type="button" onClick={onMerge} className="touch-button justify-center border border-amber-300 bg-white text-amber-900">Combine matching duplicates</button></div></div>;
+}
+function ScanResultCard({ item, allItems, onUpdate, onDelete, products, saveProduct }: { item: InventoryItem; allItems: InventoryItem[]; onUpdate: (item: InventoryItem) => void; onDelete: () => void; products: Product[]; saveProduct: (product: Product) => void }) {
   const [expanded, setExpanded] = useState(item.status !== "Confirmed" || item.chemicalName.value === "UNKNOWN PRODUCT");
   const needsReview = itemNeedsReview(item);
+  const suggestions = buildNameSuggestions(item, products, allItems);
+  const duplicate = findSimilarItem(item, allItems);
+  const updateName = (value: string, source: "user" | "database" = "user") => {
+    rememberCorrection(item, value);
+    onUpdate({ ...item, chemicalName: { ...item.chemicalName, value, confidence: 1, source }, status: "Review Required" });
+  };
   function updateField(name: "chemicalName" | "quantity" | "containerSize" | "unit" | "physicalState", value: string) {
+    if (name === "chemicalName") {
+      updateName(value);
+      return;
+    }
     const numeric = name === "quantity" || name === "containerSize" ? Number(value) : value;
     onUpdate({ ...item, [name]: { ...item[name], value: numeric as never, confidence: 1, source: "user" } });
   }
-  return <article className={`rounded-lg border bg-white p-4 ${needsReview ? "border-amber-300" : "border-slate-200"}`}><div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between"><button onClick={() => setExpanded((value) => !value)} className="min-h-11 flex-1 text-left"><div className="flex flex-wrap items-center gap-2"><h3 className="text-lg font-bold">{item.chemicalName.value || "Manual item"}</h3><ReviewBadge status={item.status} /></div><p className="mt-1 text-sm font-semibold text-slate-700">{item.quantity.value ?? "-"} × {item.containerSize.value ?? "-"} {item.unit.value ?? ""} · {item.physicalState.value ?? "Unknown"} · Confidence {Math.round(item.confidence * 100)}%</p>{needsReview && <p className="mt-1 flex items-center gap-1 text-sm font-semibold text-amber-900"><AlertTriangle size={15} />Review required</p>}</button><div className="flex flex-wrap gap-2"><button onClick={() => setExpanded((value) => !value)} className="inline-flex min-h-11 items-center rounded-md border border-slate-300 px-3 text-sm font-bold">{expanded ? "Hide details" : "Edit"}</button><button onClick={onDelete} className="inline-flex min-h-11 items-center gap-1 rounded-md border border-red-200 px-3 text-sm font-bold text-red-700"><Trash2 size={16} />Delete item</button></div></div>{expanded && <><OcrOutput text={item.ocrOutput} categories={item.ocrCategories} /><div className="mt-4 grid gap-3 sm:grid-cols-2"><FieldEditor label="Chemical Name" value={item.chemicalName.value ?? ""} confidence={item.chemicalName.confidence} source={item.chemicalName.source} onChange={(v) => updateField("chemicalName", v)} /><FieldEditor label="Quantity" type="number" value={item.quantity.value ?? ""} confidence={item.quantity.confidence} source={item.quantity.source} onChange={(v) => updateField("quantity", v)} /><FieldEditor label="Container Size" type="number" value={item.containerSize.value ?? ""} confidence={item.containerSize.confidence} source={item.containerSize.source} onChange={(v) => updateField("containerSize", v)} /><Label text={`Unit · source: ${item.unit.source}`}><select className={`input ${confidenceNeedsReview(item.unit.confidence) ? "review-field" : ""}`} value={item.unit.value ?? ""} onChange={(e) => updateField("unit", e.target.value)}>{units.map((unit) => <option key={unit}>{unit}</option>)}</select></Label><Label text={`Physical State · source: ${item.physicalState.source}`}><select className={`input ${item.physicalState.value === "Unknown" || confidenceNeedsReview(item.physicalState.confidence) ? "review-field" : ""}`} value={item.physicalState.value ?? "Unknown"} onChange={(e) => updateField("physicalState", e.target.value)}>{states.map((state) => <option key={state}>{state}</option>)}</select></Label></div><div className="mt-4 grid gap-3 sm:grid-cols-3"><button onClick={() => onUpdate({ ...item, status: "Confirmed", confidence: 1 })} className="touch-button justify-center bg-emerald-700 text-white"><CheckCircle2 size={20} />CONFIRM</button><button onClick={() => onUpdate({ ...item, status: "Review Required" })} className="touch-button justify-center border border-amber-300 bg-white text-amber-900"><AlertTriangle size={20} />FLAG FOR REVIEW</button><button onClick={() => saveProduct({ id: crypto.randomUUID(), canonicalName: item.chemicalName.value ?? "Unnamed product", typicalContainerSize: item.containerSize.value ?? undefined, unit: item.unit.value ?? undefined, physicalState: item.physicalState.value ?? "Unknown" })} className="touch-button justify-center border border-slate-300 bg-white"><Database size={20} />Save product</button></div>{products.find((p) => p.canonicalName.toLowerCase() === item.chemicalName.value?.toLowerCase()) && <p className="mt-3 text-sm font-semibold text-emerald-800">Matched local product database. Confirm before applying known values.</p>}</>}</article>;
+  return <article className={`rounded-lg border bg-white p-4 ${needsReview ? "border-amber-300" : "border-slate-200"}`}><div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between"><button onClick={() => setExpanded((value) => !value)} className="min-h-11 flex-1 text-left"><div className="flex flex-wrap items-center gap-2"><h3 className="text-lg font-bold">{item.chemicalName.value || "Manual item"}</h3><ReviewBadge status={item.status} /></div><p className="mt-1 text-sm font-semibold text-slate-700">{item.quantity.value ?? "-"} × {item.containerSize.value ?? "-"} {item.unit.value ?? ""} · {item.physicalState.value ?? "Unknown"} · Confidence {Math.round(item.confidence * 100)}%</p>{needsReview && <p className="mt-1 flex items-center gap-1 text-sm font-semibold text-amber-900"><AlertTriangle size={15} />Review required</p>}</button><div className="flex flex-wrap gap-2"><button onClick={() => setExpanded((value) => !value)} className="inline-flex min-h-11 items-center rounded-md border border-slate-300 px-3 text-sm font-bold">{expanded ? "Hide details" : "Edit"}</button><button onClick={onDelete} className="inline-flex min-h-11 items-center gap-1 rounded-md border border-red-200 px-3 text-sm font-bold text-red-700"><Trash2 size={16} />Delete item</button></div></div>{expanded && <><OcrOutput text={item.ocrOutput} categories={item.ocrCategories} />{suggestions.length > 0 && <div className="mt-4 rounded-lg border border-emerald-200 bg-emerald-50 p-3"><strong className="text-sm text-emerald-950">Name suggestions</strong><div className="mt-2 flex flex-wrap gap-2">{suggestions.map((suggestion) => <button key={suggestion} type="button" onClick={() => updateName(suggestion, "database")} className="rounded-md border border-emerald-300 bg-white px-3 py-2 text-sm font-bold text-emerald-900">{suggestion}</button>)}</div></div>}{duplicate && <div className="mt-4 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm font-semibold text-amber-950"><AlertTriangle className="mr-2 inline" size={16} />Possible duplicate of {duplicate.chemicalName.value}. Use Combine duplicates after confirming the name and size.</div>}<div className="mt-4 grid gap-3 sm:grid-cols-2"><FieldEditor label="Chemical Name" value={item.chemicalName.value ?? ""} confidence={item.chemicalName.confidence} source={item.chemicalName.source} onChange={(v) => updateField("chemicalName", v)} /><FieldEditor label="Quantity" type="number" value={item.quantity.value ?? ""} confidence={item.quantity.confidence} source={item.quantity.source} onChange={(v) => updateField("quantity", v)} /><FieldEditor label="Container Size" type="number" value={item.containerSize.value ?? ""} confidence={item.containerSize.confidence} source={item.containerSize.source} onChange={(v) => updateField("containerSize", v)} /><Label text={`Unit · source: ${item.unit.source}`}><select className={`input ${confidenceNeedsReview(item.unit.confidence) ? "review-field" : ""}`} value={item.unit.value ?? ""} onChange={(e) => updateField("unit", e.target.value)}>{units.map((unit) => <option key={unit}>{unit}</option>)}</select></Label><Label text={`Physical State · source: ${item.physicalState.source}`}><select className={`input ${item.physicalState.value === "Unknown" || confidenceNeedsReview(item.physicalState.confidence) ? "review-field" : ""}`} value={item.physicalState.value ?? "Unknown"} onChange={(e) => updateField("physicalState", e.target.value)}>{states.map((state) => <option key={state}>{state}</option>)}</select></Label></div><div className="mt-4 grid gap-3 sm:grid-cols-3"><button onClick={() => { rememberCorrection(item, item.chemicalName.value ?? ""); onUpdate({ ...item, status: "Confirmed", confidence: 1 }); }} className="touch-button justify-center bg-emerald-700 text-white"><CheckCircle2 size={20} />CONFIRM</button><button onClick={() => onUpdate({ ...item, status: "Review Required" })} className="touch-button justify-center border border-amber-300 bg-white text-amber-900"><AlertTriangle size={20} />FLAG FOR REVIEW</button><button onClick={() => saveProduct({ id: crypto.randomUUID(), canonicalName: item.chemicalName.value ?? "Unnamed product", typicalContainerSize: item.containerSize.value ?? undefined, unit: item.unit.value ?? undefined, physicalState: item.physicalState.value ?? "Unknown" })} className="touch-button justify-center border border-slate-300 bg-white"><Database size={20} />Save product</button></div>{products.find((p) => p.canonicalName.toLowerCase() === item.chemicalName.value?.toLowerCase()) && <p className="mt-3 text-sm font-semibold text-emerald-800">Matched local product database. Confirm before applying known values.</p>}</>}</article>;
 }
 function OcrOutput({ text, categories }: { text?: string; categories?: OcrCategories }) {
   const groups = categories ? [
@@ -304,6 +320,102 @@ function OcrOutput({ text, categories }: { text?: string; categories?: OcrCatego
     ["Purity / grade", categories.purityAndGrade],
   ] as const : [];
   return <details className="mt-4 rounded-lg border border-slate-200 bg-slate-50 p-3" open><summary className="cursor-pointer text-sm font-bold text-slate-800">OCR output and categories</summary>{groups.length > 0 && <div className="mt-3 grid gap-2 sm:grid-cols-2">{groups.filter(([, values]) => values.length > 0).map(([label, values]) => <div key={label} className="rounded-md border border-slate-200 bg-white p-2"><strong className="text-xs text-slate-500">{label}</strong><p className="mt-1 text-sm font-semibold text-slate-800">{values.join(" · ")}</p></div>)}</div>}<pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-md bg-white p-3 text-xs font-semibold leading-5 text-slate-700">{text?.trim() || "No raw OCR text was captured for this item."}</pre></details>;
+}
+type LearnedCorrection = { key: string; from: string; to: string; count: number; updatedAt: string };
+function applyLearnedCorrection(item: InventoryItem): InventoryItem {
+  const match = readCorrections().find((correction) => correctionMatchesItem(correction, item));
+  if (!match) return item;
+  return {
+    ...item,
+    chemicalName: { ...item.chemicalName, value: match.to, confidence: 1, source: "user" },
+    confidence: Math.max(item.confidence, 0.92),
+    notes: [item.notes, `Applied learned correction from "${match.from}".`].filter(Boolean).join(" "),
+  };
+}
+function rememberCorrection(item: InventoryItem, correctedName: string) {
+  const from = item.chemicalName.value?.trim();
+  const to = correctedName.trim();
+  if (!from || !to || from === "UNKNOWN PRODUCT" || normalizeName(from) === normalizeName(to)) return;
+  const key = correctionSignature(item, from);
+  const current = readCorrections();
+  const existing = current.find((correction) => correction.key === key);
+  const next = existing
+    ? current.map((correction) => correction.key === key ? { ...correction, to, count: correction.count + 1, updatedAt: new Date().toISOString() } : correction)
+    : [{ key, from, to, count: 1, updatedAt: new Date().toISOString() }, ...current];
+  try {
+    localStorage.setItem(correctionKey, JSON.stringify(next.slice(0, 80)));
+  } catch {
+    // Corrections are an enhancement; scanning should continue if storage is unavailable.
+  }
+}
+function readCorrections(): LearnedCorrection[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const parsed = JSON.parse(localStorage.getItem(correctionKey) ?? "[]") as LearnedCorrection[];
+    return Array.isArray(parsed) ? parsed.filter((item) => item.key && item.to) : [];
+  } catch {
+    return [];
+  }
+}
+function correctionMatchesItem(correction: LearnedCorrection, item: InventoryItem) {
+  const name = item.chemicalName.value ?? "";
+  return correction.key === correctionSignature(item, name) || normalizeName(correction.from) === normalizeName(name) || Boolean(item.ocrOutput && normalizeName(item.ocrOutput).includes(normalizeName(correction.from)));
+}
+function correctionSignature(item: InventoryItem, fallbackName: string) {
+  const catalog = item.ocrCategories?.catalogNumbers[0] ?? "";
+  const raw = item.ocrOutput ? normalizeName(item.ocrOutput).slice(0, 120) : "";
+  return normalizeName([catalog, fallbackName, raw].filter(Boolean).join("|"));
+}
+function buildNameSuggestions(item: InventoryItem, products: Product[], allItems: InventoryItem[]) {
+  const learned = readCorrections()
+    .filter((correction) => correctionMatchesItem(correction, item))
+    .map((correction) => correction.to);
+  const chemicalCandidates = item.ocrCategories?.chemicalCandidates ?? [];
+  const productMatches = products.map((product) => product.canonicalName);
+  const similar = allItems
+    .filter((current) => current.id !== item.id && current.chemicalName.value && nameSimilarity(current.chemicalName.value, item.chemicalName.value ?? "") >= 0.68)
+    .map((current) => current.chemicalName.value ?? "");
+  return uniqueNames([...(item.chemicalName.value ? [item.chemicalName.value] : []), ...learned, ...chemicalCandidates, ...productMatches, ...similar])
+    .filter((name) => name.length >= 4 && normalizeName(name) !== "unknown product")
+    .slice(0, 5);
+}
+function findDuplicatePairs(items: InventoryItem[]) {
+  const pairs: Array<[InventoryItem, InventoryItem]> = [];
+  for (let leftIndex = 0; leftIndex < items.length; leftIndex += 1) {
+    for (let rightIndex = leftIndex + 1; rightIndex < items.length; rightIndex += 1) {
+      const left = items[leftIndex];
+      const right = items[rightIndex];
+      if (areSimilarInventoryItems(left, right)) pairs.push([left, right]);
+    }
+  }
+  return pairs;
+}
+function findSimilarItem(item: InventoryItem, items: InventoryItem[]) {
+  return items.find((current) => current.id !== item.id && areSimilarInventoryItems(item, current));
+}
+function areSimilarInventoryItems(left: InventoryItem, right: InventoryItem) {
+  if (!left.chemicalName.value || !right.chemicalName.value) return false;
+  const sameSize = left.containerSize.value && right.containerSize.value && left.unit.value === right.unit.value && Math.abs(Number(left.containerSize.value) - Number(right.containerSize.value)) < 0.0001;
+  return Boolean(sameSize) && nameSimilarity(left.chemicalName.value, right.chemicalName.value) >= 0.72;
+}
+function uniqueNames(names: string[]) {
+  const seen = new Set<string>();
+  return names.map((name) => name.trim()).filter((name) => {
+    const key = normalizeName(name);
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+function normalizeName(value: string) {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").replace(/\b(solution|reagent|grade|the|and)\b/g, " ").replace(/\s+/g, " ").trim();
+}
+function nameSimilarity(left: string, right: string) {
+  const a = new Set(normalizeName(left).split(" ").filter((token) => token.length > 2));
+  const b = new Set(normalizeName(right).split(" ").filter((token) => token.length > 2));
+  if (a.size === 0 || b.size === 0) return 0;
+  const overlap = [...a].filter((token) => b.has(token)).length;
+  return overlap / Math.max(a.size, b.size);
 }
 function FieldEditor({ label, value, onChange, confidence, source, type = "text" }: { label: string; value: string | number; onChange: (value: string) => void; confidence: number; source: string; type?: string }) {
   return <Label text={`${label} · source: ${source}`}><input className={`input ${confidenceNeedsReview(confidence) ? "review-field" : ""}`} type={type} value={value} onChange={(e) => onChange(e.target.value)} /></Label>;
