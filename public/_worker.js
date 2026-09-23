@@ -1,5 +1,8 @@
 const visionPrompt =
-  "Transcribe this lab chemical label before identifying it. Return every legible text line in ocrLines. Separately identify manufacturer, catalogue/pack code, CAS, lot, purity/grade, package size, and the large bold English product-name line. chemicalName must contain only the English product or chemical name. Ignore German, French, Italian, Spanish, Dutch, Polish, and other translated name lines even when they are clearer. Never use Sigma-Aldrich, Merck, a translated synonym, solvent-only fragment, shortened fragment, or hazard wording as chemicalName. If no English name is readable, set chemicalName to null. Do not invent missing letters. Return only compact JSON with keys: ocrLines, chemicalName, manufacturer, catalogNumber, quantity, containerSize, unit, physicalState, physicalStateEvidence, casNumber, confidence. unit must be g, kg, mL, or L. physicalState must be Solid, Liquid, Gas, or Unknown. Use Unknown rather than guessing.";
+  "Inspect the label as a document and transcribe it before identifying anything. First locate the largest bold English product-name line, usually below the manufacturer and catalogue/pack code. Read that line character by character; do not complete or translate it from chemical knowledge. Return every legible line in ocrLines in top-to-bottom order. Separately identify manufacturer, catalogue/pack code, CAS, lot, purity/grade, package size, and the English product-name line. chemicalName must contain only the complete English product or chemical name. Ignore German, French, Italian, Spanish, Dutch, Polish, and other translated name lines even when clearer. Never use Sigma-Aldrich, Merck, a translated synonym, solvent-only fragment, shortened fragment, or hazard wording as chemicalName. If no English name is readable, set chemicalName to null. Return only compact JSON with keys: ocrLines, chemicalName, manufacturer, catalogNumber, quantity, containerSize, unit, physicalState, physicalStateEvidence, casNumber, confidence. unit must be g, kg, mL, or L. physicalState must be Solid, Liquid, Gas, or Unknown. Use Unknown rather than guessing.";
+
+const visionVerificationPrompt =
+  "Independently verify only the identity fields on this lab label. Zoom attention to the large bold English product-name line and the catalogue/pack code near it. Ignore the first reading, logos, hazard text, purity, lot numbers, and all translated name lines. Transcribe the English name exactly character by character without autocorrecting from chemical knowledge. Return only compact JSON with keys: chemicalName, catalogNumber, casNumber, manufacturer, confidence. If the English name is not readable, set chemicalName to null.";
 
 const worker = {
   async fetch(request, env) {
@@ -23,10 +26,31 @@ async function handleVisionRequest(request, env) {
       return json({ error: "A base64 image data URL is required" }, 400);
     }
 
-    const response = await fetch("https://api.openai.com/v1/responses", {
+    const [primaryResponse, verificationResponse] = await Promise.all([
+      requestVisionPass(body.image, visionPrompt, env.OPENAI_API_KEY),
+      requestVisionPass(body.image, visionVerificationPrompt, env.OPENAI_API_KEY),
+    ]);
+    if (!primaryResponse.ok) {
+      const data = await primaryResponse.json();
+      return json(data, primaryResponse.status);
+    }
+    const primaryData = await primaryResponse.json();
+    const verificationData = verificationResponse.ok ? await verificationResponse.json() : null;
+    const primary = parseVisionPayload(primaryData);
+    const verification = verificationData ? parseVisionPayload(verificationData) : null;
+    if (!primary) return json(primaryData, 200);
+    const merged = mergeVisionReadings(primary, verification);
+    return json({ output_text: JSON.stringify(merged) }, 200);
+  } catch {
+    return json({ error: "Vision OCR proxy failed" }, 500);
+  }
+}
+
+function requestVisionPass(image, prompt, apiKey) {
+  return fetch("https://api.openai.com/v1/responses", {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${env.OPENAI_API_KEY}`,
+        Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
@@ -35,19 +59,45 @@ async function handleVisionRequest(request, env) {
           {
             role: "user",
             content: [
-              { type: "input_text", text: visionPrompt },
-              { type: "input_image", image_url: body.image },
+              { type: "input_text", text: prompt },
+              { type: "input_image", image_url: image },
             ],
           },
         ],
       }),
     });
+}
 
-    const data = await response.json();
-    return json(data, response.status);
+function parseVisionPayload(data) {
+  const text = data?.output_text || (data?.output || []).flatMap((item) => item.content || []).map((content) => content.text || "").join("\n");
+  if (!text) return null;
+  try {
+    return JSON.parse(text.match(/\{[\s\S]*\}/)?.[0] || text);
   } catch {
-    return json({ error: "Vision OCR proxy failed" }, 500);
+    return null;
   }
+}
+
+function mergeVisionReadings(primary, verification) {
+  const primaryName = cleanText(primary.chemicalName, 160);
+  const verifiedName = cleanText(verification?.chemicalName, 160);
+  const candidates = [...new Set([primaryName, verifiedName].filter((name) => name && !isLikelyNonEnglishChemicalName(name)))];
+  const agreement = candidates.length === 1 || (candidates.length === 2 && nameSimilarity(candidates[0], candidates[1]) >= 0.88);
+  const chemicalName = agreement ? candidates.sort((left, right) => right.length - left.length)[0] || "" : primaryName || verifiedName;
+  const primaryLines = Array.isArray(primary.ocrLines) ? primary.ocrLines.filter((line) => typeof line === "string") : [];
+  return {
+    ...primary,
+    chemicalName: chemicalName || null,
+    chemicalNameCandidates: candidates,
+    nameAgreement: agreement,
+    ocrLines: [...new Set([...candidates, ...primaryLines])].slice(0, 80),
+    catalogNumber: cleanText(primary.catalogNumber, 40) || cleanText(verification?.catalogNumber, 40) || null,
+    casNumber: cleanText(primary.casNumber, 24) || cleanText(verification?.casNumber, 24) || null,
+    manufacturer: cleanText(primary.manufacturer, 80) || cleanText(verification?.manufacturer, 80) || null,
+    confidence: agreement
+      ? Math.min(0.99, Math.max(Number(primary.confidence) || 0.75, Number(verification?.confidence) || 0.75))
+      : Math.min(0.66, Number(primary.confidence) || 0.6),
+  };
 }
 
 async function handleResolveOcr(request, env) {

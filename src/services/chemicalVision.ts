@@ -129,6 +129,15 @@ const detected = ({
 export class MockChemicalVisionService implements ChemicalVisionService {
   async analyzeChemicalImage(image: File | Blob, options?: { openAiApiKey?: string }): Promise<{ items: DetectedChemical[]; warnings: string[] }> {
     await new Promise((resolve) => setTimeout(resolve, 350));
+
+    // Server-side vision is both more accurate and much lighter on mobile memory.
+    // Browser OCR now runs only when the primary reader is unavailable or cannot
+    // produce a usable English name.
+    if (image.size > 0) {
+      const aiResult = await analyzeWithOpenAIVision(image, options?.openAiApiKey);
+      if (aiResult.items.length > 0) return aiResult;
+    }
+
     const ocr = await readLabelText(image);
     const parsed = await parseLabelText(ocr.text);
 
@@ -137,11 +146,6 @@ export class MockChemicalVisionService implements ChemicalVisionService {
         warnings: [`OCR confidence ${Math.round(ocr.confidence)}%. The bold product-name line was prioritised.`, ...parsed.warnings],
         items: [parsed.item],
       };
-    }
-
-    if (image.size > 0) {
-      const aiResult = await analyzeWithOpenAIVision(image, options?.openAiApiKey);
-      if (aiResult.items.length > 0) return aiResult;
     }
 
     if (parsed.item) {
@@ -172,6 +176,8 @@ type VisionExtract = {
   catalogNumber?: string | null;
   manufacturer?: string | null;
   ocrLines?: string[] | null;
+  chemicalNameCandidates?: string[] | null;
+  nameAgreement?: boolean | null;
   confidence?: number | null;
 };
 
@@ -187,7 +193,10 @@ async function analyzeWithOpenAIVision(image: File | Blob, apiKey?: string): Pro
     const statedState = extracted.physicalStateEvidence === "label" || extracted.physicalStateEvidence === "product-name"
       ? normalizeState(extracted.physicalState)
       : null;
-    const rawOcrText = extracted.ocrLines?.filter(Boolean).join("\n") || outputText;
+    const rawOcrText = [
+      ...(extracted.chemicalNameCandidates ?? []),
+      ...(extracted.ocrLines ?? []),
+    ].filter(Boolean).join("\n") || outputText;
     const catalogReference = findChemicalByCatalog(extracted.catalogNumber ?? "");
     const pubChem = await lookupChemicalFromOcr(rawOcrText, {
       name: catalogReference?.name ?? extracted.chemicalName,
@@ -209,7 +218,9 @@ async function analyzeWithOpenAIVision(image: File | Blob, apiKey?: string): Pro
 
     return {
       warnings: [
-        "The prominent label name was read first. Operator confirmation is still required.",
+        extracted.nameAgreement === false
+          ? "Two independent label readings disagreed; the database-checked result requires operator confirmation."
+          : "The bold English name line was independently read twice. Operator confirmation is still required.",
         catalogReference
           ? `Identity validated from product catalogue ${extracted.catalogNumber}.`
           : confidentMatch
