@@ -25,10 +25,17 @@ async function handleVisionRequest(request, env) {
     if (!body.image || typeof body.image !== "string" || !body.image.startsWith("data:image/")) {
       return json({ error: "A base64 image data URL is required" }, 400);
     }
+    const labelCrop = typeof body.labelCrop === "string" && body.labelCrop.startsWith("data:image/") ? body.labelCrop : "";
+    const machineCodes = Array.isArray(body.machineCodes)
+      ? body.machineCodes.map((value) => cleanText(value, 180)).filter(Boolean).slice(0, 8)
+      : [];
+    const codeContext = machineCodes.length
+      ? ` Machine-readable codes detected separately: ${machineCodes.join(" | ")}. Treat these as catalogue/pack-code evidence, never as the chemical name.`
+      : "";
 
     const [primaryResponse, verificationResponse] = await Promise.all([
-      requestVisionPass(body.image, visionPrompt, env.OPENAI_API_KEY),
-      requestVisionPass(body.image, visionVerificationPrompt, env.OPENAI_API_KEY),
+      requestVisionPass([body.image, labelCrop].filter(Boolean), visionPrompt + codeContext, env.OPENAI_API_KEY),
+      requestVisionPass([labelCrop || body.image], visionVerificationPrompt + codeContext, env.OPENAI_API_KEY),
     ]);
     if (!primaryResponse.ok) {
       const data = await primaryResponse.json();
@@ -39,14 +46,14 @@ async function handleVisionRequest(request, env) {
     const primary = parseVisionPayload(primaryData);
     const verification = verificationData ? parseVisionPayload(verificationData) : null;
     if (!primary) return json(primaryData, 200);
-    const merged = mergeVisionReadings(primary, verification);
+    const merged = mergeVisionReadings(primary, verification, machineCodes);
     return json({ output_text: JSON.stringify(merged) }, 200);
   } catch {
     return json({ error: "Vision OCR proxy failed" }, 500);
   }
 }
 
-function requestVisionPass(image, prompt, apiKey) {
+function requestVisionPass(images, prompt, apiKey) {
   return fetch("https://api.openai.com/v1/responses", {
       method: "POST",
       headers: {
@@ -60,7 +67,7 @@ function requestVisionPass(image, prompt, apiKey) {
             role: "user",
             content: [
               { type: "input_text", text: prompt },
-              { type: "input_image", image_url: image },
+              ...images.map((image) => ({ type: "input_image", image_url: image })),
             ],
           },
         ],
@@ -78,7 +85,7 @@ function parseVisionPayload(data) {
   }
 }
 
-function mergeVisionReadings(primary, verification) {
+function mergeVisionReadings(primary, verification, machineCodes = []) {
   const primaryName = cleanText(primary.chemicalName, 160);
   const verifiedName = cleanText(verification?.chemicalName, 160);
   const candidates = [...new Set([primaryName, verifiedName].filter((name) => name && !isLikelyNonEnglishChemicalName(name)))];
@@ -90,7 +97,7 @@ function mergeVisionReadings(primary, verification) {
     chemicalName: chemicalName || null,
     chemicalNameCandidates: candidates,
     nameAgreement: agreement,
-    ocrLines: [...new Set([...candidates, ...primaryLines])].slice(0, 80),
+    ocrLines: [...new Set([...candidates, ...machineCodes, ...primaryLines])].slice(0, 80),
     catalogNumber: cleanText(primary.catalogNumber, 40) || cleanText(verification?.catalogNumber, 40) || null,
     casNumber: cleanText(primary.casNumber, 24) || cleanText(verification?.casNumber, 24) || null,
     manufacturer: cleanText(primary.manufacturer, 80) || cleanText(verification?.manufacturer, 80) || null,

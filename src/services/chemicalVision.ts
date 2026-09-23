@@ -183,8 +183,8 @@ type VisionExtract = {
 
 async function analyzeWithOpenAIVision(image: File | Blob, apiKey?: string): Promise<{ items: DetectedChemical[]; warnings: string[] }> {
   try {
-    const imageUrl = await blobToDataUrl(image);
-    const data = await requestVisionExtraction(imageUrl, apiKey);
+    const prepared = await prepareVisionInput(image);
+    const data = await requestVisionExtraction(prepared.fullImageUrl, prepared.labelCropUrl, prepared.machineCodes, apiKey);
     if (!data) return { items: [], warnings: ["OpenAI Vision OCR is not configured yet. Tesseract fallback was used."] };
     const outputText = extractOpenAIOutputText(data);
     const extracted = parseVisionJson(outputText);
@@ -218,6 +218,7 @@ async function analyzeWithOpenAIVision(image: File | Blob, apiKey?: string): Pro
 
     return {
       warnings: [
+        ...prepared.qualityWarnings,
         extracted.nameAgreement === false
           ? "Two independent label readings disagreed; the database-checked result requires operator confirmation."
           : "The bold English name line was independently read twice. Operator confirmation is still required.",
@@ -246,8 +247,8 @@ async function analyzeWithOpenAIVision(image: File | Blob, apiKey?: string): Pro
   }
 }
 
-async function requestVisionExtraction(imageUrl: string, apiKey?: string): Promise<unknown | null> {
-  const proxied = await fetchVisionProxy(imageUrl);
+async function requestVisionExtraction(imageUrl: string, labelCropUrl: string | null, machineCodes: string[], apiKey?: string): Promise<unknown | null> {
+  const proxied = await fetchVisionProxy(imageUrl, labelCropUrl, machineCodes);
   if (proxied) return proxied;
   if (!apiKey) return null;
   const response = await fetch("https://api.openai.com/v1/responses", {
@@ -264,9 +265,10 @@ async function requestVisionExtraction(imageUrl: string, apiKey?: string): Promi
             content: [
               {
                 type: "input_text",
-                text: "Transcribe this lab chemical label before identifying it. Return every legible text line in ocrLines, then propose the exact main English product name. chemicalName must contain only the English product or chemical name. Ignore German, French, Italian, Spanish, Dutch, Polish, and other translated name lines even when they are clearer. Distinguish manufacturer, catalogue/pack code, CAS, lot, purity/grade, package size, and the large bold product-name line. Never use Sigma-Aldrich, Merck, a translated synonym, solvent-only fragment, or hazard wording as the chemical name. If no English name is readable, set chemicalName to null. Do not invent missing letters. Return only compact JSON with keys: ocrLines, chemicalName, manufacturer, catalogNumber, quantity, containerSize, unit, physicalState, physicalStateEvidence, casNumber, confidence. unit must be g, kg, mL, or L; physicalState must be Solid, Liquid, Gas, or Unknown.",
+                text: `Transcribe this lab chemical label before identifying it. The first image is the full container and the optional second image is an automatically focused label crop. Return every legible text line in ocrLines, then propose the exact main English product name. chemicalName must contain only the English product or chemical name. Ignore translated name lines, logos, hazard text, purity and lot numbers. Prefer the catalogue/pack code as identity evidence. Machine-readable codes detected separately: ${machineCodes.join(" | ") || "none"}. Return only compact JSON with keys: ocrLines, chemicalName, manufacturer, catalogNumber, quantity, containerSize, unit, physicalState, physicalStateEvidence, casNumber, confidence. unit must be g, kg, mL, or L; physicalState must be Solid, Liquid, Gas, or Unknown.`,
               },
               { type: "input_image", image_url: imageUrl },
+              ...(labelCropUrl ? [{ type: "input_image" as const, image_url: labelCropUrl }] : []),
             ],
           },
         ],
@@ -275,17 +277,156 @@ async function requestVisionExtraction(imageUrl: string, apiKey?: string): Promi
   return response.ok ? response.json() : null;
 }
 
-async function fetchVisionProxy(imageUrl: string): Promise<unknown | null> {
+async function fetchVisionProxy(imageUrl: string, labelCropUrl: string | null, machineCodes: string[]): Promise<unknown | null> {
   try {
     const response = await fetch("/api/openai-vision", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ image: imageUrl }),
+      body: JSON.stringify({ image: imageUrl, labelCrop: labelCropUrl, machineCodes }),
     });
     if (!response.ok) return null;
     return response.json();
   } catch {
     return null;
+  }
+}
+
+type VisionPreparation = {
+  fullImageUrl: string;
+  labelCropUrl: string | null;
+  machineCodes: string[];
+  qualityWarnings: string[];
+};
+
+async function prepareVisionInput(image: File | Blob): Promise<VisionPreparation> {
+  if (typeof createImageBitmap !== "function" || typeof document === "undefined") {
+    return { fullImageUrl: await blobToDataUrl(image), labelCropUrl: null, machineCodes: [], qualityWarnings: [] };
+  }
+  const bitmap = await createImageBitmap(image, { imageOrientation: "from-image" });
+  try {
+    const machineCodes = await detectMachineCodes(bitmap);
+    const sample = drawScaledCanvas(bitmap, 420);
+    const metrics = inspectImageQuality(sample);
+    const bounds = detectLikelyLabelBounds(sample);
+    const fullImageUrl = renderImageRegion(bitmap, { x: 0, y: 0, width: 1, height: 1 }, 2200, 0.92);
+    const labelCropUrl = renderImageRegion(bitmap, bounds, 1800, 0.94);
+    const qualityWarnings: string[] = [];
+    if (bitmap.width < 900 || bitmap.height < 900) qualityWarnings.push("The image resolution is low; move closer to the label on the next photo.");
+    if (metrics.blurScore < 70) qualityWarnings.push("The photo may be blurred. Hold the phone steady and retake it if the name looks wrong.");
+    if (metrics.glareRatio > 0.1 && metrics.darkRatio > 0.22) qualityWarnings.push("Strong glare was detected. Tilt the bottle or light slightly if the name looks wrong.");
+    if (machineCodes.length) qualityWarnings.push(`Machine-readable code detected and used as catalogue evidence: ${machineCodes[0]}`);
+    return { fullImageUrl, labelCropUrl, machineCodes, qualityWarnings };
+  } finally {
+    bitmap.close();
+  }
+}
+
+function drawScaledCanvas(bitmap: ImageBitmap, maxDimension: number) {
+  const scale = Math.min(1, maxDimension / Math.max(bitmap.width, bitmap.height));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+  canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+  if (!context) throw new Error("Canvas unavailable");
+  context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  return canvas;
+}
+
+function inspectImageQuality(canvas: HTMLCanvasElement) {
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+  if (!context) return { blurScore: 999, glareRatio: 0, darkRatio: 0 };
+  const { width, height } = canvas;
+  const data = context.getImageData(0, 0, width, height).data;
+  const gray = new Float32Array(width * height);
+  let glare = 0;
+  let dark = 0;
+  for (let index = 0, pixel = 0; index < data.length; index += 4, pixel += 1) {
+    const value = data[index] * 0.299 + data[index + 1] * 0.587 + data[index + 2] * 0.114;
+    gray[pixel] = value;
+    if (value > 252) glare += 1;
+    if (value < 48) dark += 1;
+  }
+  let sum = 0;
+  let sumSquared = 0;
+  let count = 0;
+  for (let y = 1; y < height - 1; y += 2) {
+    for (let x = 1; x < width - 1; x += 2) {
+      const at = y * width + x;
+      const laplacian = gray[at] * 4 - gray[at - 1] - gray[at + 1] - gray[at - width] - gray[at + width];
+      sum += laplacian;
+      sumSquared += laplacian * laplacian;
+      count += 1;
+    }
+  }
+  const mean = count ? sum / count : 0;
+  return {
+    blurScore: count ? sumSquared / count - mean * mean : 999,
+    glareRatio: glare / Math.max(1, width * height),
+    darkRatio: dark / Math.max(1, width * height),
+  };
+}
+
+function detectLikelyLabelBounds(canvas: HTMLCanvasElement) {
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+  if (!context) return { x: 0.08, y: 0.2, width: 0.84, height: 0.62 };
+  const { width, height } = canvas;
+  const data = context.getImageData(0, 0, width, height).data;
+  const columns = new Uint16Array(width);
+  const rows = new Uint16Array(height);
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const index = (y * width + x) * 4;
+      const red = data[index];
+      const green = data[index + 1];
+      const blue = data[index + 2];
+      const luminance = red * 0.299 + green * 0.587 + blue * 0.114;
+      const neutral = Math.max(red, green, blue) - Math.min(red, green, blue) < 88;
+      if (neutral && luminance > 92 && luminance < 252) {
+        columns[x] += 1;
+        rows[y] += 1;
+      }
+    }
+  }
+  const activeColumns = [...columns].map((count, index) => ({ count, index })).filter(({ count }) => count > height * 0.22);
+  const activeRows = [...rows].map((count, index) => ({ count, index })).filter(({ count }) => count > width * 0.22);
+  if (!activeColumns.length || !activeRows.length) return { x: 0.08, y: 0.2, width: 0.84, height: 0.62 };
+  const left = Math.max(0, activeColumns[0].index / width - 0.05);
+  const right = Math.min(1, activeColumns[activeColumns.length - 1].index / width + 0.05);
+  const top = Math.max(0, activeRows[0].index / height - 0.05);
+  const bottom = Math.min(1, activeRows[activeRows.length - 1].index / height + 0.05);
+  if (right - left < 0.32 || bottom - top < 0.16) return { x: 0.08, y: 0.2, width: 0.84, height: 0.62 };
+  return { x: left, y: top, width: right - left, height: bottom - top };
+}
+
+function renderImageRegion(bitmap: ImageBitmap, region: { x: number; y: number; width: number; height: number }, maxDimension: number, quality: number) {
+  const sourceX = Math.round(bitmap.width * region.x);
+  const sourceY = Math.round(bitmap.height * region.y);
+  const sourceWidth = Math.max(1, Math.round(bitmap.width * region.width));
+  const sourceHeight = Math.max(1, Math.round(bitmap.height * region.height));
+  const scale = Math.min(1.7, maxDimension / Math.max(sourceWidth, sourceHeight));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(sourceWidth * scale));
+  canvas.height = Math.max(1, Math.round(sourceHeight * scale));
+  const context = canvas.getContext("2d");
+  if (!context) throw new Error("Canvas unavailable");
+  context.imageSmoothingEnabled = true;
+  context.imageSmoothingQuality = "high";
+  context.drawImage(bitmap, sourceX, sourceY, sourceWidth, sourceHeight, 0, 0, canvas.width, canvas.height);
+  return canvas.toDataURL("image/jpeg", quality);
+}
+
+async function detectMachineCodes(bitmap: ImageBitmap) {
+  type BarcodeResult = { rawValue?: string };
+  type BarcodeDetectorInstance = { detect(source: ImageBitmap): Promise<BarcodeResult[]> };
+  type BarcodeDetectorConstructor = new (options: { formats: string[] }) => BarcodeDetectorInstance;
+  const Detector = (globalThis as typeof globalThis & { BarcodeDetector?: BarcodeDetectorConstructor }).BarcodeDetector;
+  if (!Detector) return [];
+  try {
+    const detector = new Detector({ formats: ["data_matrix", "qr_code", "code_128", "code_39", "ean_13"] });
+    const results = await detector.detect(bitmap);
+    return [...new Set(results.map((result) => result.rawValue?.trim()).filter((value): value is string => Boolean(value)))].slice(0, 8);
+  } catch {
+    return [];
   }
 }
 
