@@ -35,6 +35,10 @@ export function downloadCsv(drum: Drum) {
 }
 
 export function downloadPdf(drum: Drum) {
+  createInventoryPdf(drum).save(`${drum.drumId}-inventory.pdf`);
+}
+
+export function createInventoryPdf(drum: Drum) {
   const doc = new jsPDF();
   doc.setFillColor(4, 120, 87);
   doc.rect(0, 0, 210, 22, "F");
@@ -67,7 +71,7 @@ export function downloadPdf(drum: Drum) {
   doc.text("Checked by:", 14, y + 18);
   doc.text("Signature:", 14, y + 30);
   doc.text("Date:", 14, y + 42);
-  doc.save(`${drum.drumId}-inventory.pdf`);
+  return doc;
 }
 
 export function downloadXlsx(drum: Drum) {

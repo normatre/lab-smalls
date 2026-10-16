@@ -1,11 +1,11 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, Archive, Camera, CheckCircle2, ClipboardCheck, Database, FileDown, Filter, History, Home, ImageUp, LogIn, Plus, Printer, RotateCcw, Search, Settings, ShieldCheck, Trash2, Wifi, WifiOff } from "lucide-react";
+import { AlertTriangle, Archive, Camera, CheckCircle2, ClipboardCheck, Database, FileDown, Filter, History, Home, ImageUp, LogIn, Mail, Plus, Printer, RotateCcw, Search, Settings, ShieldCheck, Trash2, Wifi, WifiOff } from "lucide-react";
 import { chemicalVisionService } from "@/services/chemicalVision";
 import { field } from "@/lib/demo-data";
 import { completionBlockers, confidenceNeedsReview, mergeDuplicateItems, totalContainers } from "@/lib/inventory";
-import { downloadCsv, downloadPdf, downloadXlsx, openPrintView } from "@/lib/exporters";
+import { createInventoryPdf, downloadCsv, downloadPdf, downloadXlsx, openPrintView } from "@/lib/exporters";
 import type { Drum, InventoryItem, OcrCategories, PhysicalState, Product, RetentionPolicy, Role, Unit } from "@/types/lab-smalls";
 
 type View = "Dashboard" | "New Drum" | "Active Drums" | "History" | "PubChem Database" | "Settings";
@@ -464,7 +464,49 @@ function blockerReasons(item: InventoryItem) {
   return reasons;
 }
 function ExportMenu({ drum }: { drum: Drum }) {
-  return <div className="mt-4 grid gap-3 sm:grid-cols-4"><button className="touch-button border border-slate-300 bg-white" onClick={() => downloadPdf(drum)}><FileDown size={18} />PDF</button><button className="touch-button border border-slate-300 bg-white" onClick={() => downloadCsv(drum)}><FileDown size={18} />CSV</button><button className="touch-button border border-slate-300 bg-white" onClick={() => downloadXlsx(drum)}><FileDown size={18} />XLSX</button><button className="touch-button border border-slate-300 bg-white" onClick={openPrintView}><Printer size={18} />Print</button></div>;
+  const [emailOpen, setEmailOpen] = useState(false);
+  return <><div className="mt-4 grid gap-3 sm:grid-cols-5"><button className="touch-button border border-slate-300 bg-white" onClick={() => downloadPdf(drum)}><FileDown size={18} />PDF</button><button className="touch-button border border-slate-300 bg-white" onClick={() => setEmailOpen(true)}><Mail size={18} />Email PDF</button><button className="touch-button border border-slate-300 bg-white" onClick={() => downloadCsv(drum)}><FileDown size={18} />CSV</button><button className="touch-button border border-slate-300 bg-white" onClick={() => downloadXlsx(drum)}><FileDown size={18} />XLSX</button><button className="touch-button border border-slate-300 bg-white" onClick={openPrintView}><Printer size={18} />Print</button></div>{emailOpen && <EmailPdfDialog drum={drum} onClose={() => setEmailOpen(false)} />}</>;
+}
+function EmailPdfDialog({ drum, onClose }: { drum: Drum; onClose: () => void }) {
+  const [email, setEmail] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  async function sendToEmailApp(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const recipient = email.trim();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(recipient)) {
+      setError("Enter a valid email address.");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    const filename = `${drum.drumId}-inventory.pdf`;
+    const blob = createInventoryPdf(drum).output("blob");
+    const file = new File([blob], filename, { type: "application/pdf" });
+    try {
+      if (typeof navigator.share === "function" && typeof navigator.canShare === "function" && navigator.canShare({ files: [file] })) {
+        await navigator.share({
+          files: [file],
+          title: `${drum.drumId} inventory PDF`,
+          text: `Send this Lab Smalls inventory PDF to ${recipient}.`,
+        });
+        onClose();
+        return;
+      }
+
+      downloadPdf(drum);
+      const subject = encodeURIComponent(`${drum.drumId} Lab Smalls inventory`);
+      const body = encodeURIComponent(`Please find the inventory PDF for ${drum.drumId} attached. The PDF was downloaded to this device; attach it to this email before sending.`);
+      window.location.href = `mailto:${encodeURIComponent(recipient)}?subject=${subject}&body=${body}`;
+      setError("The PDF was downloaded and an email draft was opened. Attach the downloaded PDF before sending.");
+    } catch (shareError) {
+      if (shareError instanceof DOMException && shareError.name === "AbortError") return;
+      setError("Could not open the sharing app. Download the PDF and attach it to an email manually.");
+    } finally {
+      setBusy(false);
+    }
+  }
+  return <div role="dialog" aria-modal="true" aria-labelledby="email-pdf-title" className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={onClose}><form onSubmit={(event) => void sendToEmailApp(event)} onClick={(event) => event.stopPropagation()} className="w-full max-w-md rounded-lg bg-white p-5 shadow-xl"><div className="flex items-start justify-between gap-3"><div><h3 id="email-pdf-title" className="text-lg font-bold">Email inventory PDF</h3><p className="mt-1 text-sm text-slate-600">{drum.drumId}</p></div><button type="button" onClick={onClose} aria-label="Close" className="rounded-md border border-slate-300 px-3 py-2 text-sm font-bold">Close</button></div><Label text="Recipient email"><input className="input" type="email" required autoComplete="email" placeholder="name@example.com" value={email} onChange={(event) => setEmail(event.target.value)} /></Label><p className="mt-3 text-sm text-slate-600">On phones, choose your email app in the share menu and send the attached PDF. Your email app will let you review it before sending.</p>{error && <p role="status" className="mt-3 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm font-semibold text-amber-900">{error}</p>}<button type="submit" disabled={busy} className="touch-button mt-4 w-full justify-center bg-emerald-700 text-white disabled:opacity-60"><Mail size={18} />{busy ? "Opening email..." : "Continue to email"}</button></form></div>;
 }
 function HistoryView({ drums, onOpen, onDelete }: { drums: Drum[]; onOpen: (id: string) => void; onDelete: (id: string) => void }) {
   const [query, setQuery] = useState("");
