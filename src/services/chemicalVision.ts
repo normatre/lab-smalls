@@ -178,6 +178,7 @@ type VisionExtract = {
   ocrLines?: string[] | null;
   chemicalNameCandidates?: string[] | null;
   nameAgreement?: boolean | null;
+  nameConfidence?: number | null;
   confidence?: number | null;
 };
 
@@ -187,51 +188,90 @@ async function analyzeWithOpenAIVision(image: File | Blob, apiKey?: string): Pro
     const data = await requestVisionExtraction(prepared.fullImageUrl, prepared.labelCropUrl, prepared.machineCodes, apiKey);
     if (!data) return { items: [], warnings: ["OpenAI Vision OCR is not configured yet. Tesseract fallback was used."] };
     const outputText = extractOpenAIOutputText(data);
-    const extracted = parseVisionJson(outputText);
+    let extracted = parseVisionJson(outputText);
     if (!extracted?.chemicalName) return { items: [], warnings: ["OpenAI Vision OCR did not find a chemical name. Tesseract fallback was used."] };
+
+    let verification: VisionExtract | null = null;
+    const needsNameVerification = extracted.nameAgreement !== true || (extracted.nameConfidence ?? 0) < 0.84;
+    const verificationAttempted = apiKey !== undefined && needsNameVerification;
+    if (apiKey && needsNameVerification) {
+      const verificationData = await requestNameVerification(prepared, apiKey);
+      const verificationText = verificationData ? extractOpenAIOutputText(verificationData) : "";
+      verification = parseVisionJson(verificationText);
+      if (verification?.chemicalName) {
+        extracted = {
+          ...extracted,
+          chemicalName: verification.chemicalName,
+          chemicalNameCandidates: [...(extracted.chemicalNameCandidates ?? []), ...(verification.chemicalNameCandidates ?? [])],
+          ocrLines: [...(extracted.ocrLines ?? []), ...(verification.ocrLines ?? [])],
+          nameAgreement: !namesConflict(extracted.chemicalName ?? "", verification.chemicalName),
+          nameConfidence: verification.nameConfidence ?? extracted.nameConfidence,
+        };
+      }
+    }
 
     const statedState = extracted.physicalStateEvidence === "label" || extracted.physicalStateEvidence === "product-name"
       ? normalizeState(extracted.physicalState)
       : null;
+    const primaryExtracted = parseVisionJson(outputText);
     const rawOcrText = [
+      primaryExtracted?.chemicalName,
+      ...(primaryExtracted?.chemicalNameCandidates ?? []),
+      ...(primaryExtracted?.ocrLines ?? []),
+      extracted.chemicalName,
       ...(extracted.chemicalNameCandidates ?? []),
       ...(extracted.ocrLines ?? []),
-    ].filter(Boolean).join("\n") || outputText;
+    ].filter((line): line is string => Boolean(line)).join("\n") || outputText;
+    const extractedName = extracted.chemicalName ?? "";
     const catalogReference = findChemicalByCatalog(extracted.catalogNumber ?? "");
     const pubChem = await lookupChemicalFromOcr(rawOcrText, {
-      name: catalogReference?.name ?? extracted.chemicalName,
+      name: catalogReference?.name ?? extractedName,
       catalogNumber: extracted.catalogNumber,
       casNumber: extracted.casNumber ?? catalogReference?.cas,
       labelState: statedState,
       manufacturer: extracted.manufacturer,
     });
-    const confidentMatch = pubChem && pubChem.confidence >= 0.86 && !pubChem.reviewRequired ? pubChem : null;
-    const visionName = cleanChemicalNameCandidate(extracted.chemicalName);
-    const fallbackName = pubChem?.name ?? (!isLikelyNonEnglishChemicalName(visionName) ? visionName : "");
-    const name = catalogReference?.name ?? confidentMatch?.name ?? fallbackName;
+    const confidentMatch = pubChem && pubChem.confidence >= 0.86 && !pubChem.reviewRequired
+      && !namesConflict(extractedName, pubChem.name) ? pubChem : null;
+    const visionName = cleanChemicalNameCandidate(extractedName);
+    const databaseConflict = Boolean(pubChem && namesConflict(visionName, pubChem.name));
+    const fallbackName = !isLikelyNonEnglishChemicalName(visionName) ? visionName : (!databaseConflict ? pubChem?.name ?? "" : "");
+    const name = catalogReference?.name ?? (confidentMatch && !databaseConflict ? confidentMatch.name : fallbackName);
     if (!name) {
       return { items: [], warnings: ["OCR did not produce a usable chemical or product name. Retake the label photo closer and straighter."] };
     }
     const state = statedState ?? catalogReference?.state ?? pubChem?.physicalState ?? "Unknown";
     const unit = normalizeUnit(extracted.unit);
-    const confidence = Math.max(0.45, Math.min(0.98, Math.min(extracted.confidence ?? 0.8, pubChem?.confidence ?? 0.8)));
+    const verificationConflict = Boolean(verification?.chemicalName && namesConflict(primaryExtracted?.chemicalName ?? "", verification.chemicalName));
+    const confidence = Math.min(
+      verificationConflict ? 0.72 : 0.98,
+      Math.max(0.45, Math.min(extracted.confidence ?? 0.8, confidentMatch?.confidence ?? 0.9)),
+    );
 
     return {
       warnings: [
         ...prepared.qualityWarnings,
-        extracted.nameAgreement === false
-          ? "Two independent label readings disagreed; the database-checked result requires operator confirmation."
-          : "The bold English name line was independently read twice. Operator confirmation is still required.",
+        verificationConflict
+          ? "Independent name reads disagreed. The second focused read is shown; verify it against the label before confirming."
+          : verification
+            ? "Independent full-label and focused-label reads agreed on the product name. Verify the displayed name before confirming."
+            : verificationAttempted
+              ? "A second name read was attempted but unavailable. Verify the displayed name against the label before confirming."
+              : extracted.nameAgreement === true
+              ? "The model cross-checked the product-name line against the full label. Verify the displayed name before confirming."
+              : "The product name was read once because no uncertain-name retry was available. Verify it against the label before confirming.",
         catalogReference
           ? `Identity validated from product catalogue ${extracted.catalogNumber}.`
           : confidentMatch
             ? `Identity validated with ${confidentMatch.source}.`
-            : "No database match was found. The closest OCR name and label size were added for manual review.",
+            : databaseConflict
+              ? `Ignored conflicting database name (${pubChem?.name}); kept the name read from the label.`
+              : "The name comes from the label image; verify spelling before confirming.",
       ],
       items: [
         detected({
           name,
-          quantity: normalizeNumber(extracted.quantity) ?? 1,
+          quantity: normalizeNumber(extracted.quantity),
           size: normalizeNumber(extracted.containerSize),
           unit,
           state,
@@ -251,30 +291,51 @@ async function requestVisionExtraction(imageUrl: string, labelCropUrl: string | 
   const proxied = await fetchVisionProxy(imageUrl, labelCropUrl, machineCodes);
   if (proxied) return proxied;
   if (!apiKey) return null;
-  const response = await fetch("https://api.openai.com/v1/responses", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "gpt-4.1-mini",
-        input: [
-          {
+  return requestOpenAIVision(
+    apiKey,
+    [imageUrl, labelCropUrl].filter((value): value is string => Boolean(value)),
+    `Read this laboratory chemical label for inventory. Identify ONLY the actual product/chemical name printed as the main product-name line, usually the largest or boldest text on the label. Do not return the manufacturer/brand, catalogue code, grade (for example ACS reagent), purity, hazard statements, storage directions, lot or expiry text as the chemical name. Keep distinguishing chemical words, numbers, prefixes, salt forms, hydrates, and formulation words such as "solution" when they are part of the printed product name. For example, return "Calcium carbonate" rather than "ACS reagent", and return "Boron trifluoride Methanol Solution" rather than only "Methanol solution". Do not infer a name from bottle colour or a guessed database match. First transcribe every visible label line into ocrLines; then extract the full product name into chemicalName and give other plausible readings in chemicalNameCandidates. Compare the full-label view with the focused-label view and set nameAgreement and nameConfidence (0 to 1) honestly. If the name is not legible, use an empty chemicalName rather than inventing one. Also return manufacturer, catalogNumber, quantity, containerSize, unit, physicalState, physicalStateEvidence, casNumber, and confidence. Machine-readable codes detected separately: ${machineCodes.join(" | ") || "none"}. Return compact JSON only.`,
+    "original",
+  );
+}
+
+async function requestNameVerification(prepared: VisionPreparation, apiKey: string): Promise<unknown | null> {
+  return requestOpenAIVision(
+    apiKey,
+    [prepared.fullImageUrl, prepared.labelCropUrl].filter((value): value is string => Boolean(value)),
+    "Independently re-read this chemical label, focusing only on the exact main English product-name line. Do not trust a prior OCR result or guess from the manufacturer, product category, hazard symbols, or grade text. Distinguish the chemical/product name from nearby words such as ACS reagent, powder, purity, concentration, or solvent instructions; retain formulation words only when they are printed as part of the product name. Return the full name as chemicalName, all visible lines as ocrLines, plausible alternate readings as chemicalNameCandidates, and nameConfidence from 0 to 1. If unreadable, return an empty chemicalName. Quantity and size may be null. Return compact JSON only.",
+    "original",
+  );
+}
+
+async function requestOpenAIVision(apiKey: string, images: string[], prompt: string, detail: "original" | "high") {
+  const send = async (model: string, imageDetail: "original" | "high") => {
+    try {
+      const response = await fetch("https://api.openai.com/v1/responses", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model,
+          max_output_tokens: 1200,
+          input: [{
             role: "user",
             content: [
-              {
-                type: "input_text",
-                text: `Transcribe this lab chemical label before identifying it. The first image is the full container and the optional second image is an automatically focused label crop. Return every legible text line in ocrLines, then propose the exact main English product name. chemicalName must contain only the English product or chemical name. Ignore translated name lines, logos, hazard text, purity and lot numbers. Prefer the catalogue/pack code as identity evidence. Machine-readable codes detected separately: ${machineCodes.join(" | ") || "none"}. Return only compact JSON with keys: ocrLines, chemicalName, manufacturer, catalogNumber, quantity, containerSize, unit, physicalState, physicalStateEvidence, casNumber, confidence. unit must be g, kg, mL, or L; physicalState must be Solid, Liquid, Gas, or Unknown.`,
-              },
-              { type: "input_image", image_url: imageUrl },
-              ...(labelCropUrl ? [{ type: "input_image" as const, image_url: labelCropUrl }] : []),
+              { type: "input_text", text: prompt },
+              ...images.map((image_url) => ({ type: "input_image" as const, image_url, detail: imageDetail })),
             ],
-          },
-        ],
-      }),
-    });
-  return response.ok ? response.json() : null;
+          }],
+        }),
+      });
+      return { status: response.status, data: response.ok ? await response.json() : null };
+    } catch {
+      return { status: 0, data: null };
+    }
+  };
+
+  const primary = await send("gpt-5.4", detail);
+  if (primary.data) return primary.data;
+  if (primary.status === 400 || primary.status === 404) return (await send("gpt-4.1", "high")).data;
+  return null;
 }
 
 async function fetchVisionProxy(imageUrl: string, labelCropUrl: string | null, machineCodes: string[]): Promise<unknown | null> {
@@ -308,8 +369,13 @@ async function prepareVisionInput(image: File | Blob): Promise<VisionPreparation
     const sample = drawScaledCanvas(bitmap, 420);
     const metrics = inspectImageQuality(sample);
     const bounds = detectLikelyLabelBounds(sample);
-    const fullImageUrl = renderImageRegion(bitmap, { x: 0, y: 0, width: 1, height: 1 }, 2200, 0.92);
-    const labelCropUrl = renderImageRegion(bitmap, bounds, 1800, 0.94);
+    const supportedImage = ["image/jpeg", "image/png", "image/webp", "image/gif"].includes(image.type.toLowerCase());
+    const fullImageUrl = supportedImage
+      ? await blobToDataUrl(image)
+      : renderImageRegion(bitmap, { x: 0, y: 0, width: 1, height: 1 }, Math.max(bitmap.width, bitmap.height), 0.98);
+    const cropWidth = Math.round(bitmap.width * bounds.width);
+    const cropHeight = Math.round(bitmap.height * bounds.height);
+    const labelCropUrl = renderImageRegion(bitmap, bounds, Math.max(cropWidth, cropHeight), 0.98);
     const qualityWarnings: string[] = [];
     if (bitmap.width < 900 || bitmap.height < 900) qualityWarnings.push("The image resolution is low; move closer to the label on the next photo.");
     if (metrics.blurScore < 70) qualityWarnings.push("The photo may be blurred. Hold the phone steady and retake it if the name looks wrong.");
@@ -712,7 +778,7 @@ function extractQuantity(text: string) {
   if (pack) return Number(pack[1]);
   const multiplier = text.match(/(\d+)\s*[x×]\s*\d+(?:[.,]\d+)?\s*(?:kg|g|ml|l)\b/);
   if (multiplier) return Number(multiplier[1]);
-  return 1;
+  return null;
 }
 
 function extractCatalogNumber(text: string) {
