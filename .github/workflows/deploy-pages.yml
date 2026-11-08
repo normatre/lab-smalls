@@ -35,6 +35,8 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build static site
+        env:
+          NEXT_PUBLIC_BASE_PATH: /lab-smalls
         run: pnpm run export
 
       - name: Upload artifact

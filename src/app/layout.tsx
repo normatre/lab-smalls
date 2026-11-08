@@ -15,7 +15,7 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "Lab Smalls Scanner",
   description: "Mobile-first lab smalls drum inventory with human-verified AI extraction.",
-  manifest: "/manifest.json",
+  manifest: `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/manifest.json`,
   appleWebApp: {
     capable: true,
     statusBarStyle: "default",
