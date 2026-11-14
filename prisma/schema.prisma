@@ -76,6 +76,7 @@ model InventoryItem {
   chemicalName   Json
   quantity       Json
   containerSize  Json
+  concentration  Json?
   unit           Json
   physicalState  Json
   manufacturer   String?
@@ -100,6 +101,7 @@ model Product {
   casNumber            String?
   unNumber             String?
   typicalContainerSize Float?
+  typicalConcentration String?
   unit                 String?
   physicalState        PhysicalState   @default(UNKNOWN)
   items                InventoryItem[]

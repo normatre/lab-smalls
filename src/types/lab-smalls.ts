@@ -28,6 +28,7 @@ export type InventoryItem = {
   chemicalName: SourcedField<string>;
   quantity: SourcedField<number>;
   containerSize: SourcedField<number>;
+  concentration: SourcedField<string>;
   unit: SourcedField<Unit>;
   physicalState: SourcedField<PhysicalState>;
   manufacturer?: string;
@@ -69,6 +70,7 @@ export type Product = {
   casNumber?: string;
   unNumber?: string;
   typicalContainerSize?: number;
+  typicalConcentration?: string;
   unit?: Unit;
   physicalState: PhysicalState;
 };

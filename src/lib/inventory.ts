@@ -31,6 +31,7 @@ export function mergeDuplicateItems(items: InventoryItem[]) {
       item.chemicalName.value?.trim().toLowerCase(),
       item.containerSize.value,
       item.unit.value,
+      item.concentration.value?.trim().toLowerCase(),
     ].join("|");
 
     if (!item.chemicalName.value || item.chemicalName.value === "UNKNOWN PRODUCT" || !item.containerSize.value || !item.unit.value) {

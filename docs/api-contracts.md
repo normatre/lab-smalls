@@ -19,6 +19,8 @@ Use this contract when a server, serverless functions, or a database-backed depl
 - `PATCH /api/items` - edit or confirm item
 - `DELETE /api/items` - delete item
 
+Inventory items may include an optional, label-sourced concentration string (for example, `4% in methanol` or `0.1 M`). It remains optional because many chemical containers do not state a formulation concentration.
+
 ## Search
 
 - `GET /api/history?q=acetone` - search drum history

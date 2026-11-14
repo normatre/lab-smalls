@@ -90,6 +90,7 @@ const detected = ({
   name,
   quantity,
   size,
+  concentration = null,
   unit,
   state,
   confidence,
@@ -104,6 +105,7 @@ const detected = ({
   name: string;
   quantity: number | null;
   size: number | null;
+  concentration?: string | null;
   unit: Unit | null;
   state: PhysicalState;
   confidence: number;
@@ -118,6 +120,7 @@ const detected = ({
   chemicalName: sourced(name, confidence, source),
   quantity: sourced(quantity, quantity ? Math.min(0.92, confidence + 0.08) : 0.35, quantity ? "label" : "image"),
   containerSize: sourced(size, size ? Math.min(0.92, confidence + 0.05) : 0.35, size ? "label" : "image"),
+  concentration: sourced(concentration, concentration ? Math.min(0.92, confidence + 0.04) : 0.35, concentration ? "label" : "image"),
   unit: sourced(unit, unit ? Math.min(0.94, confidence + 0.06) : 0.35, unit ? "label" : "image"),
   physicalState: sourced(state, state === "Unknown" ? 0.3 : 0.86, state === "Unknown" ? "image" : "database"),
   confidence,
@@ -169,6 +172,7 @@ type VisionExtract = {
   chemicalName?: string | null;
   quantity?: number | null;
   containerSize?: number | null;
+  concentration?: string | null;
   unit?: Unit | null;
   physicalState?: PhysicalState | null;
   physicalStateEvidence?: "label" | "product-name" | "inferred" | "none" | null;
@@ -273,6 +277,7 @@ async function analyzeWithOpenAIVision(image: File | Blob, apiKey?: string): Pro
           name,
           quantity: normalizeNumber(extracted.quantity),
           size: normalizeNumber(extracted.containerSize),
+          concentration: normalizeConcentration(extracted.concentration) ?? extractConcentration(rawOcrText),
           unit,
           state,
           confidence,
@@ -294,7 +299,7 @@ async function requestVisionExtraction(imageUrl: string, labelCropUrl: string | 
   return requestOpenAIVision(
     apiKey,
     [imageUrl, labelCropUrl].filter((value): value is string => Boolean(value)),
-    `Read this laboratory chemical label for inventory. Identify ONLY the actual product/chemical name printed as the main product-name line, usually the largest or boldest text on the label. Do not return the manufacturer/brand, catalogue code, grade (for example ACS reagent), purity, hazard statements, storage directions, lot or expiry text as the chemical name. Keep distinguishing chemical words, numbers, prefixes, salt forms, hydrates, and formulation words such as "solution" when they are part of the printed product name. For example, return "Calcium carbonate" rather than "ACS reagent", and return "Boron trifluoride Methanol Solution" rather than only "Methanol solution". Do not infer a name from bottle colour or a guessed database match. First transcribe every visible label line into ocrLines; then extract the full product name into chemicalName and give other plausible readings in chemicalNameCandidates. Compare the full-label view with the focused-label view and set nameAgreement and nameConfidence (0 to 1) honestly. If the name is not legible, use an empty chemicalName rather than inventing one. Also return manufacturer, catalogNumber, quantity, containerSize, unit, physicalState, physicalStateEvidence, casNumber, and confidence. Machine-readable codes detected separately: ${machineCodes.join(" | ") || "none"}. Return compact JSON only.`,
+    `Read this laboratory chemical label for inventory. Identify ONLY the actual product/chemical name printed as the main product-name line, usually the largest or boldest text on the label. Do not return the manufacturer/brand, catalogue code, grade (for example ACS reagent), purity, hazard statements, storage directions, lot or expiry text as the chemical name. Keep distinguishing chemical words, numbers, prefixes, salt forms, hydrates, and formulation words such as "solution" when they are part of the printed product name. For example, return "Calcium carbonate" rather than "ACS reagent", and return "Boron trifluoride Methanol Solution" rather than only "Methanol solution". Do not infer a name from bottle colour or a guessed database match. First transcribe every visible label line into ocrLines; then extract the full product name into chemicalName and give other plausible readings in chemicalNameCandidates. Compare the full-label view with the focused-label view and set nameAgreement and nameConfidence (0 to 1) honestly. If the name is not legible, use an empty chemicalName rather than inventing one. Also return manufacturer, catalogNumber, quantity, containerSize, concentration, unit, physicalState, physicalStateEvidence, casNumber, and confidence. Concentration is the formulation strength, such as "4% in methanol", "0.1 M", or "37% w/w". Read it only when explicitly printed; keep its units and solvent/basis, and never mistake a reagent grade or purity such as "ACS reagent" or "≥99%" for concentration. Use null when no concentration is explicitly stated. Machine-readable codes detected separately: ${machineCodes.join(" | ") || "none"}. Return compact JSON only.`,
     "original",
   );
 }
@@ -656,6 +661,7 @@ async function parseLabelText(text: string): Promise<{ item: DetectedChemical | 
     ? await lookupChemicalEverywhere(catalogReference.name, catalogReference.cas)
     : await lookupPubChemFromText(text);
   const size = extractSize(normalized) ?? labProduct?.defaultSize ?? null;
+  const concentration = extractConcentration(normalized);
   const quantity = extractQuantity(normalized);
   const explicitState = inferStateFromWords(normalized);
   const state = labProduct?.state ?? (explicitState !== "Unknown" ? explicitState : pubChem?.physicalState ?? reference?.state ?? "Unknown");
@@ -684,6 +690,7 @@ async function parseLabelText(text: string): Promise<{ item: DetectedChemical | 
       name: name ?? "UNKNOWN PRODUCT",
       quantity,
       size: size?.value ?? null,
+      concentration,
       unit: size?.unit ?? null,
       state,
       confidence,
@@ -778,6 +785,26 @@ function extractQuantity(text: string) {
   if (pack) return Number(pack[1]);
   const multiplier = text.match(/(\d+)\s*[x×]\s*\d+(?:[.,]\d+)?\s*(?:kg|g|ml|l)\b/);
   if (multiplier) return Number(multiplier[1]);
+  return null;
+}
+
+function normalizeConcentration(value?: string | null) {
+  const normalized = value?.replace(/\s+/g, " ").trim();
+  return normalized ? normalized.slice(0, 100) : null;
+}
+
+function extractConcentration(text: string) {
+  const normalized = text.replace(/\s+/g, " ");
+  const patterns = [
+    /\b\d+(?:[.,]\d+)?\s*(?:%|wt\.?\s*%|w\s*\/\s*v|v\s*\/\s*v|w\s*\/\s*w)\s*(?:in\s+[a-z][a-z0-9 -]{1,32})/i,
+    /\b\d+(?:[.,]\d+)?\s*%\s*(?:w\s*\/\s*v|v\s*\/\s*v|w\s*\/\s*w|aqueous|solution)\b/i,
+    /\b(?:solution|concentration)\s*(?:of\s*)?\d+(?:[.,]\d+)?\s*%/i,
+    /\b\d+(?:[.,]\d+)?\s*(?:mol\s*\/\s*l|mol\s*l-1|mM|µM|uM|M|N)\b/i,
+  ];
+  for (const pattern of patterns) {
+    const match = normalized.match(pattern);
+    if (match) return normalizeConcentration(match[0]);
+  }
   return null;
 }
 
