@@ -3,12 +3,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, Archive, Camera, CheckCircle2, ClipboardCheck, Database, FileDown, Filter, History, Home, ImageUp, LogIn, Mail, Plus, Printer, RotateCcw, Search, Settings, ShieldCheck, Trash2, Wifi, WifiOff } from "lucide-react";
 import { chemicalVisionService } from "@/services/chemicalVision";
-import { field } from "@/lib/demo-data";
+import { demoDrums, demoProducts, field } from "@/lib/demo-data";
 import { completionBlockers, confidenceNeedsReview, mergeDuplicateItems, totalContainers } from "@/lib/inventory";
 import { createInventoryPdf, downloadCsv, downloadPdf, downloadXlsx, openPrintView } from "@/lib/exporters";
 import type { Drum, InventoryItem, OcrCategories, PhysicalState, Product, RetentionPolicy, Role, Unit } from "@/types/lab-smalls";
 
 type View = "Dashboard" | "New Drum" | "Active Drums" | "History" | "PubChem Database" | "Settings";
+type SavedAppState = { drums?: Drum[]; products?: Product[]; retention?: RetentionPolicy; selectedDrumId?: string; openAiApiKey?: string };
 const navItems: { label: View; icon: typeof Home }[] = [
   { label: "Dashboard", icon: Home }, { label: "New Drum", icon: Plus }, { label: "Active Drums", icon: Archive },
   { label: "History", icon: History }, { label: "PubChem Database", icon: Database }, { label: "Settings", icon: Settings },
@@ -16,7 +17,18 @@ const navItems: { label: View; icon: typeof Home }[] = [
 const units: Unit[] = ["g", "kg", "mL", "L"];
 const states: PhysicalState[] = ["Solid", "Liquid", "Gas", "Unknown"];
 const storageKey = "lab-smalls-scanner-state-v2";
+const salesDemoStorageKey = `${storageKey}-sales-demo`;
 const correctionKey = "lab-smalls-scanner-corrections-v1";
+
+function localDateString(date = new Date()) {
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+function seededSalesDrums() {
+  const today = localDateString();
+  return demoDrums.map((drum) => ({ ...drum, date: today, ...(drum.status === "Completed" ? { finalisedAt: `${today}T12:00:00.000Z` } : {}) }));
+}
 
 export default function HomePage() {
   const [view, setView] = useState<View>("Dashboard");
@@ -26,11 +38,55 @@ export default function HomePage() {
   const [products, setProducts] = useState<Product[]>([]);
   const [retention, setRetention] = useState<RetentionPolicy>("Keep until drum completion");
   const [openAiApiKey, setOpenAiApiKey] = useState("");
+  const [demoMode, setDemoMode] = useState(false);
   const [online, setOnline] = useState(true);
   const [hydrated, setHydrated] = useState(false);
   const selectedDrum = drums.find((drum) => drum.id === selectedDrumId);
   const activeDrums = drums.filter((drum) => drum.status !== "Completed");
   const completedDrums = drums.filter((drum) => drum.status === "Completed");
+  const activeCorrectionKey = demoMode ? `${correctionKey}-sales-demo` : correctionKey;
+  const openSalesDemo = () => {
+    const seededDrums = seededSalesDrums();
+    window.history.replaceState(null, "", `${window.location.pathname}?demo=1`);
+    setDemoMode(true);
+    setDrums(seededDrums.map(stripUnneededDrumFields));
+    setProducts(demoProducts);
+    setOpenAiApiKey("");
+    setRetention("Keep until drum completion");
+    setRole("Chemist");
+    setSelectedDrumId(seededDrums[0]?.id ?? "");
+    setView("Dashboard");
+    setHydrated(true);
+  };
+  const resetSalesDemo = () => {
+    const seededDrums = seededSalesDrums();
+    localStorage.removeItem(salesDemoStorageKey);
+    localStorage.removeItem(`${correctionKey}-sales-demo`);
+    setDrums(seededDrums.map(stripUnneededDrumFields));
+    setProducts(demoProducts);
+    setRetention("Keep until drum completion");
+    setOpenAiApiKey("");
+    setRole("Chemist");
+    setSelectedDrumId(seededDrums[0]?.id ?? "");
+    setView("Dashboard");
+  };
+  const exitSalesDemo = () => {
+    let saved: SavedAppState | null = null;
+    try {
+      const stored = localStorage.getItem(storageKey);
+      saved = stored ? JSON.parse(stored) as SavedAppState : null;
+    } catch {
+      localStorage.removeItem(storageKey);
+    }
+    window.history.replaceState(null, "", window.location.pathname);
+    setDemoMode(false);
+    setDrums(saved?.drums?.map(stripUnneededDrumFields) ?? []);
+    setProducts(saved?.products?.map(stripUnneededProductFields) ?? []);
+    setRetention(saved?.retention ?? "Keep until drum completion");
+    setOpenAiApiKey(saved?.openAiApiKey ?? "");
+    setSelectedDrumId(saved?.selectedDrumId ?? "");
+    setView("Dashboard");
+  };
   const updateDrum = (updated: Drum) => { setDrums((current) => current.map((drum) => drum.id === updated.id ? updated : drum)); setSelectedDrumId(updated.id); };
   const deleteDrum = (id: string) => {
     const target = drums.find((drum) => drum.id === id);
@@ -46,6 +102,36 @@ export default function HomePage() {
   };
 
   useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("demo") === "1") {
+      const resetSalesDemo = params.get("reset") === "1";
+      if (resetSalesDemo) localStorage.removeItem(salesDemoStorageKey);
+      const storedDemo = resetSalesDemo ? null : localStorage.getItem(salesDemoStorageKey);
+      let parsedDemo: SavedAppState | null = null;
+      try {
+        parsedDemo = storedDemo ? JSON.parse(storedDemo) as SavedAppState : null;
+      } catch {
+        localStorage.removeItem(salesDemoStorageKey);
+      }
+      window.setTimeout(() => {
+        setDemoMode(true);
+        if (parsedDemo?.drums?.length) {
+          setDrums(parsedDemo.drums.map(stripUnneededDrumFields));
+          setSelectedDrumId(parsedDemo.selectedDrumId ?? parsedDemo.drums[0].id);
+          setProducts(parsedDemo.products?.map(stripUnneededProductFields) ?? demoProducts);
+          if (parsedDemo.retention) setRetention(parsedDemo.retention);
+          if (parsedDemo.openAiApiKey) setOpenAiApiKey(parsedDemo.openAiApiKey);
+        } else {
+          const seededDrums = seededSalesDrums();
+          setDrums(seededDrums.map(stripUnneededDrumFields));
+          setProducts(demoProducts);
+          setSelectedDrumId(seededDrums[0]?.id ?? "");
+        }
+        setHydrated(true);
+      }, 0);
+      if (resetSalesDemo) window.history.replaceState(null, "", `${window.location.pathname}?demo=1`);
+      return;
+    }
     const stored = localStorage.getItem(storageKey);
     if (stored) {
       try {
@@ -67,20 +153,21 @@ export default function HomePage() {
 
   useEffect(() => {
     if (!hydrated) return;
+    const activeStorageKey = demoMode ? salesDemoStorageKey : storageKey;
     try {
-      localStorage.setItem(storageKey, JSON.stringify({ drums, products, retention, selectedDrumId, openAiApiKey }));
+      localStorage.setItem(activeStorageKey, JSON.stringify({ drums, products, retention, selectedDrumId, openAiApiKey }));
     } catch {
       // Mobile browsers have a small storage quota. Keep the inventory even if
       // older image previews no longer fit instead of crashing the page.
       const drumsWithoutImages = drums.map((drum) => ({ ...drum, scanImages: [] }));
       try {
-        localStorage.setItem(storageKey, JSON.stringify({ drums: drumsWithoutImages, products, retention, selectedDrumId, openAiApiKey }));
+        localStorage.setItem(activeStorageKey, JSON.stringify({ drums: drumsWithoutImages, products, retention, selectedDrumId, openAiApiKey }));
       } catch {
         // Storage can also be unavailable in private browsing. The in-memory
         // inventory remains usable for the current session.
       }
     }
-  }, [drums, hydrated, openAiApiKey, products, retention, selectedDrumId]);
+  }, [demoMode, drums, hydrated, openAiApiKey, products, retention, selectedDrumId]);
 
   function createDrum(form: Omit<Drum, "id" | "status" | "imagesScanned" | "items">) {
     const drum: Drum = { ...form, id: crypto.randomUUID(), status: "Active", imagesScanned: 0, scanImages: [], scanImageIds: [], scanWarnings: [], items: [] };
@@ -95,9 +182,11 @@ export default function HomePage() {
         <div className="mx-auto flex max-w-7xl items-center gap-3 px-4 py-3">
           <div className="flex h-11 w-11 items-center justify-center rounded-lg bg-emerald-700 text-white"><ClipboardCheck size={24} /></div>
           <div className="min-w-0 flex-1"><h1 className="truncate text-xl font-bold tracking-tight">Lab Smalls Scanner</h1><p className="text-sm text-slate-600">AI-assisted extraction. Operator verification required.</p></div>
+          {!demoMode && <button onClick={openSalesDemo} className="touch-button min-h-10 shrink-0 border border-emerald-300 bg-white px-3 text-sm font-bold text-emerald-800">Sales demo</button>}
           <button onClick={() => setOnline((value) => !value)} className="touch-button hidden border border-slate-300 bg-white text-sm font-semibold sm:flex">{online ? <Wifi size={18} /> : <WifiOff size={18} />}{online ? "ONLINE" : "OFFLINE"}</button>
         </div>
       </header>
+      {demoMode && <div className="border-b border-emerald-200 bg-emerald-50"><div className="mx-auto flex max-w-7xl flex-col gap-3 px-4 py-3 sm:flex-row sm:items-center sm:justify-between"><div><p className="font-bold text-emerald-950">Sales demo · synthetic sample data</p><p className="text-sm text-emerald-900">Demo changes are isolated from this browser’s personal inventory.</p></div><div className="flex flex-wrap gap-2"><button onClick={resetSalesDemo} className="min-h-10 rounded-md border border-emerald-300 bg-white px-3 text-sm font-bold text-emerald-900">Reset demo</button><button onClick={exitSalesDemo} className="min-h-10 rounded-md border border-slate-300 bg-white px-3 text-sm font-bold">Exit demo</button></div></div></div>}
       <div className="mx-auto grid max-w-7xl gap-4 px-4 py-4 lg:grid-cols-[260px_1fr]">
         <aside className="hidden rounded-lg border border-slate-200 bg-white p-3 lg:block">
           <DemoLogin role={role} setRole={setRole} />
@@ -107,10 +196,10 @@ export default function HomePage() {
           <OfflineStatus online={online} pending={!online && activeDrums.length > 0} />
           {view === "Dashboard" && <Dashboard drums={drums} onNew={() => setView("New Drum")} onDelete={deleteDrum} onContinue={(id) => { setSelectedDrumId(id); setView("Active Drums"); }} />}
           {view === "New Drum" && <DrumForm nextNumber={drums.length + 1} operator="Demo Chemist" onCreate={createDrum} />}
-          {view === "Active Drums" && <ActiveDrums drums={activeDrums} selected={selectedDrum} onSelect={setSelectedDrumId} onDelete={deleteDrum} onUpdate={updateDrum} products={products} saveProduct={(product) => setProducts((current) => [product, ...current])} openAiApiKey={openAiApiKey} />}
+          {view === "Active Drums" && <ActiveDrums drums={activeDrums} selected={selectedDrum} onSelect={setSelectedDrumId} onDelete={deleteDrum} onUpdate={updateDrum} products={products} saveProduct={(product) => setProducts((current) => [product, ...current])} openAiApiKey={openAiApiKey} correctionStorageKey={activeCorrectionKey} />}
           {view === "History" && <HistoryView drums={completedDrums.length ? completedDrums : drums} onDelete={deleteDrum} onOpen={(id) => { setSelectedDrumId(id); setView("Active Drums"); }} />}
           {view === "PubChem Database" && <ProductDatabase products={products} />}
-          {view === "Settings" && <SettingsView retention={retention} setRetention={setRetention} role={role} openAiApiKey={openAiApiKey} setOpenAiApiKey={setOpenAiApiKey} resetDemo={() => { localStorage.removeItem(storageKey); localStorage.removeItem(correctionKey); setDrums([]); setProducts([]); setOpenAiApiKey(""); setSelectedDrumId(""); }} />}
+          {view === "Settings" && <SettingsView retention={retention} setRetention={setRetention} role={role} openAiApiKey={openAiApiKey} setOpenAiApiKey={setOpenAiApiKey} resetDemo={() => { localStorage.removeItem(demoMode ? salesDemoStorageKey : storageKey); localStorage.removeItem(activeCorrectionKey); setDrums([]); setProducts([]); setOpenAiApiKey(""); setSelectedDrumId(""); }} />}
         </section>
       </div>
       <nav className="fixed inset-x-0 bottom-0 z-40 grid grid-cols-5 border-t border-slate-200 bg-white lg:hidden">
@@ -141,7 +230,7 @@ function MetricMini({ label, value }: { label: string; value: number }) {
 function Dashboard({ drums, onNew, onContinue, onDelete }: { drums: Drum[]; onNew: () => void; onContinue: (id: string) => void; onDelete: (id: string) => void }) {
   const reviewCount = drums.flatMap((drum) => drum.items).filter((item) => item.status !== "Confirmed").length;
   const active = drums.filter((d) => d.status === "Active");
-  return <div className="space-y-4"><section className="grid gap-3 md:grid-cols-2"><button onClick={onNew} className="rounded-lg bg-emerald-700 p-5 text-left text-white shadow-sm"><Plus size={30} /><strong className="mt-3 block text-2xl">Start new drum</strong><span className="mt-1 block text-sm text-emerald-50">Create ID, operator details, then begin scanning.</span></button><button onClick={() => active[0] && onContinue(active[0].id)} className="rounded-lg border border-slate-200 bg-white p-5 text-left shadow-sm disabled:opacity-50" disabled={!active[0]}><Archive size={30} className="text-slate-700" /><strong className="mt-3 block text-2xl">Continue active drum</strong><span className="mt-1 block text-sm text-slate-600">{active[0] ? `${active[0].drumId} has ${completionBlockers(active[0]).length} review blocker(s).` : "No active drums."}</span></button></section><div className="grid gap-3 sm:grid-cols-4"><Metric label="Active drums" value={active.length} /><Metric label="Completed today" value={drums.filter((d) => d.status === "Completed" && d.date === "2026-09-20").length} /><Metric label="Items requiring review" value={reviewCount} urgent={reviewCount > 0} /><Metric label="Recently completed" value={drums.filter((d) => d.status === "Completed").length} /></div><Panel title="Recently touched drums"><div className="space-y-3">{drums.length === 0 && <p className="rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm font-semibold text-slate-600">No drums on this device yet. Start a new drum to begin a private local inventory for this browser.</p>}{drums.map((drum) => <DrumListButton key={drum.id} drum={drum} onClick={() => onContinue(drum.id)} onDelete={() => onDelete(drum.id)} />)}</div></Panel></div>;
+  return <div className="space-y-4"><section className="grid gap-3 md:grid-cols-2"><button onClick={onNew} className="rounded-lg bg-emerald-700 p-5 text-left text-white shadow-sm"><Plus size={30} /><strong className="mt-3 block text-2xl">Start new drum</strong><span className="mt-1 block text-sm text-emerald-50">Create ID, operator details, then begin scanning.</span></button><button onClick={() => active[0] && onContinue(active[0].id)} className="rounded-lg border border-slate-200 bg-white p-5 text-left shadow-sm disabled:opacity-50" disabled={!active[0]}><Archive size={30} className="text-slate-700" /><strong className="mt-3 block text-2xl">Continue active drum</strong><span className="mt-1 block text-sm text-slate-600">{active[0] ? `${active[0].drumId} has ${completionBlockers(active[0]).length} review blocker(s).` : "No active drums."}</span></button></section><div className="grid gap-3 sm:grid-cols-4"><Metric label="Active drums" value={active.length} /><Metric label="Completed today" value={drums.filter((d) => d.status === "Completed" && d.date === localDateString()).length} /><Metric label="Items requiring review" value={reviewCount} urgent={reviewCount > 0} /><Metric label="Recently completed" value={drums.filter((d) => d.status === "Completed").length} /></div><Panel title="Recently touched drums"><div className="space-y-3">{drums.length === 0 && <p className="rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm font-semibold text-slate-600">No drums on this device yet. Start a new drum to begin a private local inventory for this browser.</p>}{drums.map((drum) => <DrumListButton key={drum.id} drum={drum} onClick={() => onContinue(drum.id)} onDelete={() => onDelete(drum.id)} />)}</div></Panel></div>;
 }
 function Label({ text, children }: { text: string; children: React.ReactNode }) {
   return <label className="grid gap-2 text-sm font-bold text-slate-700"><span>{text}</span>{children}</label>;
@@ -150,7 +239,7 @@ function DrumForm({ nextNumber, operator, onCreate }: { nextNumber: number; oper
   const [drumId, setDrumId] = useState(`LS-2026-${String(nextNumber).padStart(3, "0")}`);
   const [size, setSize] = useState<Drum["size"]>("205 L");
   const [operatorName, setOperatorName] = useState(operator);
-  const [date, setDate] = useState("2026-09-20");
+  const [date, setDate] = useState(localDateString());
   const [notes, setNotes] = useState("");
   return <Panel title="New Drum"><form className="grid gap-4" onSubmit={(e) => { e.preventDefault(); onCreate({ drumId, size, category: "Lab Smalls", operatorName, date, notes }); }}><Label text="Drum ID"><input className="input" value={drumId} onChange={(e) => setDrumId(e.target.value)} /></Label><Label text="Drum size"><select className="input" value={size} onChange={(e) => setSize(e.target.value as Drum["size"])}><option>30 L</option><option>60 L</option><option>205 L</option><option>Other</option></select></Label><Label text="Waste/category"><input className="input" value="Lab Smalls" readOnly /></Label><Label text="Operator name"><input className="input" value={operatorName} onChange={(e) => setOperatorName(e.target.value)} /></Label><Label text="Date"><input className="input" type="date" value={date} onChange={(e) => setDate(e.target.value)} /></Label><Label text="Optional notes"><textarea className="input min-h-28" value={notes} onChange={(e) => setNotes(e.target.value)} /></Label><button className="touch-button min-h-14 justify-center bg-emerald-700 text-white" type="submit"><Camera size={22} />START SCANNING</button></form></Panel>;
 }
@@ -158,11 +247,11 @@ function DrumListButton({ drum, onClick, onDelete }: { drum: Drum; onClick: () =
   const blockers = completionBlockers(drum).length;
   return <div className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm"><div className="flex items-start justify-between gap-3"><button onClick={onClick} className="min-h-11 flex-1 text-left"><strong>{drum.drumId}</strong><div className="mt-1 text-sm text-slate-600">{totalContainers(drum)} containers · {drum.operatorName}</div></button><div className="flex shrink-0 items-center gap-2"><ReviewBadge status={drum.status === "Completed" ? "Completed" : blockers ? "Review Required" : "Active"} />{onDelete && <button onClick={onDelete} className="inline-flex min-h-11 items-center gap-1 rounded-md border border-red-200 bg-white px-3 text-sm font-bold text-red-700"><Trash2 size={16} />Delete</button>}</div></div></div>;
 }
-function ActiveDrums({ drums, selected, onSelect, onDelete, onUpdate, products, saveProduct, openAiApiKey }: { drums: Drum[]; selected?: Drum; onSelect: (id: string) => void; onDelete: (id: string) => void; onUpdate: (drum: Drum) => void; products: Product[]; saveProduct: (product: Product) => void; openAiApiKey: string }) {
+function ActiveDrums({ drums, selected, onSelect, onDelete, onUpdate, products, saveProduct, openAiApiKey, correctionStorageKey }: { drums: Drum[]; selected?: Drum; onSelect: (id: string) => void; onDelete: (id: string) => void; onUpdate: (drum: Drum) => void; products: Product[]; saveProduct: (product: Product) => void; openAiApiKey: string; correctionStorageKey: string }) {
   if (!selected) return <Panel title="Active Drums"><p className="rounded-lg border border-slate-200 bg-slate-50 p-4 font-semibold text-slate-700">No active drum selected.</p></Panel>;
-  return <div className="grid gap-4 xl:grid-cols-[300px_1fr]"><Panel title="Active Drums"><div className="space-y-3">{drums.map((drum) => <DrumListButton key={drum.id} drum={drum} onClick={() => onSelect(drum.id)} onDelete={() => onDelete(drum.id)} />)}</div></Panel><div className="space-y-4"><CameraScanner drum={selected} onUpdate={onUpdate} openAiApiKey={openAiApiKey} /><ReviewSection drum={selected} onUpdate={onUpdate} products={products} saveProduct={saveProduct} /><DrumSummary drum={selected} onUpdate={onUpdate} /></div></div>;
+  return <div className="grid gap-4 xl:grid-cols-[300px_1fr]"><Panel title="Active Drums"><div className="space-y-3">{drums.map((drum) => <DrumListButton key={drum.id} drum={drum} onClick={() => onSelect(drum.id)} onDelete={() => onDelete(drum.id)} />)}</div></Panel><div className="space-y-4"><CameraScanner drum={selected} onUpdate={onUpdate} openAiApiKey={openAiApiKey} correctionStorageKey={correctionStorageKey} /><ReviewSection drum={selected} onUpdate={onUpdate} products={products} saveProduct={saveProduct} correctionStorageKey={correctionStorageKey} /><DrumSummary drum={selected} onUpdate={onUpdate} /></div></div>;
 }
-function CameraScanner({ drum, onUpdate, openAiApiKey }: { drum: Drum; onUpdate: (drum: Drum) => void; openAiApiKey: string }) {
+function CameraScanner({ drum, onUpdate, openAiApiKey, correctionStorageKey }: { drum: Drum; onUpdate: (drum: Drum) => void; openAiApiKey: string; correctionStorageKey: string }) {
   const fileRef = useRef<HTMLInputElement>(null);
   const galleryRef = useRef<HTMLInputElement>(null);
   const [processing, setProcessing] = useState(false);
@@ -176,7 +265,7 @@ function CameraScanner({ drum, onUpdate, openAiApiKey }: { drum: Drum; onUpdate:
       const { analysisImage, preview } = await prepareCameraImage(file);
       const result = await chemicalVisionService.analyzeChemicalImage(analysisImage, { openAiApiKey: openAiApiKey.trim() || undefined });
       const imageId = crypto.randomUUID();
-      const additions: InventoryItem[] = result.items.map((item) => applyLearnedCorrection({ ...item, id: crypto.randomUUID(), sourceImageIds: [imageId], status: item.chemicalName.value === "UNKNOWN PRODUCT" ? "Unknown" : "Review Required" }));
+      const additions: InventoryItem[] = result.items.map((item) => applyLearnedCorrection({ ...item, id: crypto.randomUUID(), sourceImageIds: [imageId], status: item.chemicalName.value === "UNKNOWN PRODUCT" ? "Unknown" : "Review Required" }, correctionStorageKey));
       const scanImages = [preview, ...(drum.scanImages ?? [])].slice(0, 8);
       const scanImageIds = [imageId, ...(drum.scanImageIds ?? [])].slice(0, 8);
       onUpdate({ ...drum, imagesScanned: scanImages.length, scanImages, scanImageIds, scanWarnings: result.warnings, items: mergeDuplicateItems([...drum.items, ...additions]) });
@@ -266,7 +355,7 @@ function stripUnneededProductFields(product: Product): Product {
   return required;
 }
 
-function ReviewSection({ drum, onUpdate, products, saveProduct }: { drum: Drum; onUpdate: (drum: Drum) => void; products: Product[]; saveProduct: (product: Product) => void }) {
+function ReviewSection({ drum, onUpdate, products, saveProduct, correctionStorageKey }: { drum: Drum; onUpdate: (drum: Drum) => void; products: Product[]; saveProduct: (product: Product) => void; correctionStorageKey: string }) {
   const [reviewOnly, setReviewOnly] = useState(false);
   const updateItem = (item: InventoryItem) => onUpdate({ ...drum, items: drum.items.map((current) => current.id === item.id ? item : current) });
   const deleteItem = (item: InventoryItem) => {
@@ -283,7 +372,7 @@ function ReviewSection({ drum, onUpdate, products, saveProduct }: { drum: Drum; 
   const addManual = () => onUpdate({ ...drum, items: [{ id: crypto.randomUUID(), chemicalName: field("", 1, "user"), quantity: field(1, 1, "user"), containerSize: field(1, 1, "user"), concentration: field<string>(null, 1, "user"), unit: field("L", 1, "user"), physicalState: field("Unknown", 1, "user"), confidence: 1, status: "Review Required" }, ...drum.items] });
   const visibleItems = reviewOnly ? drum.items.filter(itemNeedsReview) : drum.items;
   const confirmSafe = () => onUpdate({ ...drum, items: drum.items.map((item) => itemNeedsReview(item) ? item : { ...item, status: "Confirmed" }) });
-  return <Panel title="Review Items"><div id="review" className="mb-3 flex flex-wrap gap-3"><button onClick={addManual} className="touch-button bg-slate-900 text-white"><Plus size={20} />ADD MANUALLY</button><button onClick={() => onUpdate({ ...drum, items: mergeDuplicateItems(drum.items) })} className="touch-button border border-slate-300 bg-white">Combine duplicates</button><button onClick={() => setReviewOnly((value) => !value)} className="touch-button border border-slate-300 bg-white"><Filter size={20} />{reviewOnly ? "Show all" : "Review only"}</button><button onClick={confirmSafe} className="touch-button border border-emerald-300 bg-white text-emerald-800"><CheckCircle2 size={20} />Confirm safe items</button></div><DuplicateReview items={drum.items} onMerge={() => onUpdate({ ...drum, items: mergeDuplicateItems(drum.items) })} /><div className="grid gap-3">{visibleItems.map((item) => <ScanResultCard key={item.id} item={item} allItems={drum.items} onUpdate={updateItem} onDelete={() => deleteItem(item)} products={products} saveProduct={saveProduct} />)}{visibleItems.length === 0 && <p className="rounded-lg border border-emerald-200 bg-emerald-50 p-4 font-semibold text-emerald-800">No items need review.</p>}</div></Panel>;
+  return <Panel title="Review Items"><div id="review" className="mb-3 flex flex-wrap gap-3"><button onClick={addManual} className="touch-button bg-slate-900 text-white"><Plus size={20} />ADD MANUALLY</button><button onClick={() => onUpdate({ ...drum, items: mergeDuplicateItems(drum.items) })} className="touch-button border border-slate-300 bg-white">Combine duplicates</button><button onClick={() => setReviewOnly((value) => !value)} className="touch-button border border-slate-300 bg-white"><Filter size={20} />{reviewOnly ? "Show all" : "Review only"}</button><button onClick={confirmSafe} className="touch-button border border-emerald-300 bg-white text-emerald-800"><CheckCircle2 size={20} />Confirm safe items</button></div><DuplicateReview items={drum.items} onMerge={() => onUpdate({ ...drum, items: mergeDuplicateItems(drum.items) })} /><div className="grid gap-3">{visibleItems.map((item) => <ScanResultCard key={item.id} item={item} allItems={drum.items} onUpdate={updateItem} onDelete={() => deleteItem(item)} products={products} saveProduct={saveProduct} correctionStorageKey={correctionStorageKey} />)}{visibleItems.length === 0 && <p className="rounded-lg border border-emerald-200 bg-emerald-50 p-4 font-semibold text-emerald-800">No items need review.</p>}</div></Panel>;
 }
 
 function itemNeedsReview(item: InventoryItem) {
@@ -294,13 +383,13 @@ function DuplicateReview({ items, onMerge }: { items: InventoryItem[]; onMerge: 
   if (pairs.length === 0) return null;
   return <div className="mb-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950"><div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"><div><strong>Possible duplicate items</strong><p className="mt-1 font-semibold">{pairs.map(([left, right]) => `${left.chemicalName.value} / ${right.chemicalName.value}`).join(" · ")}</p></div><button type="button" onClick={onMerge} className="touch-button justify-center border border-amber-300 bg-white text-amber-900">Combine matching duplicates</button></div></div>;
 }
-function ScanResultCard({ item, allItems, onUpdate, onDelete, products, saveProduct }: { item: InventoryItem; allItems: InventoryItem[]; onUpdate: (item: InventoryItem) => void; onDelete: () => void; products: Product[]; saveProduct: (product: Product) => void }) {
+function ScanResultCard({ item, allItems, onUpdate, onDelete, products, saveProduct, correctionStorageKey }: { item: InventoryItem; allItems: InventoryItem[]; onUpdate: (item: InventoryItem) => void; onDelete: () => void; products: Product[]; saveProduct: (product: Product) => void; correctionStorageKey: string }) {
   const [expanded, setExpanded] = useState(item.status !== "Confirmed" || item.chemicalName.value === "UNKNOWN PRODUCT");
   const needsReview = itemNeedsReview(item);
-  const suggestions = buildNameSuggestions(item);
+  const suggestions = buildNameSuggestions(item, correctionStorageKey);
   const duplicate = findSimilarItem(item, allItems);
   const updateName = (value: string, source: "user" | "database" = "user") => {
-    rememberCorrection(item, value);
+    rememberCorrection(item, value, correctionStorageKey);
     onUpdate({ ...item, chemicalName: { ...item.chemicalName, value, confidence: 1, source }, status: "Review Required" });
   };
   function updateField(name: "chemicalName" | "quantity" | "containerSize" | "concentration" | "unit" | "physicalState", value: string) {
@@ -311,7 +400,7 @@ function ScanResultCard({ item, allItems, onUpdate, onDelete, products, saveProd
     const updatedValue = name === "quantity" || name === "containerSize" ? (value === "" ? null : Number(value)) : value;
     onUpdate({ ...item, [name]: { ...item[name], value: updatedValue as never, confidence: 1, source: "user" } });
   }
-  return <article className={`rounded-lg border bg-white p-4 ${needsReview ? "border-amber-300" : "border-slate-200"}`}><div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between"><button onClick={() => setExpanded((value) => !value)} className="min-h-11 flex-1 text-left"><div className="flex flex-wrap items-center gap-2"><h3 className="text-lg font-bold">{item.chemicalName.value || "Manual item"}</h3><ReviewBadge status={item.status} /></div><p className="mt-1 text-sm font-semibold text-slate-700">{item.quantity.value ?? "-"} × {item.containerSize.value ?? "-"} {item.unit.value ?? ""} · {item.physicalState.value ?? "Unknown"}{item.concentration.value ? ` · ${item.concentration.value}` : ""} · Confidence {Math.round(item.confidence * 100)}%</p>{needsReview && <p className="mt-1 flex items-center gap-1 text-sm font-semibold text-amber-900"><AlertTriangle size={15} />Review required</p>}</button><div className="flex flex-wrap gap-2"><button onClick={() => setExpanded((value) => !value)} className="inline-flex min-h-11 items-center rounded-md border border-slate-300 px-3 text-sm font-bold">{expanded ? "Hide details" : "Edit"}</button><button onClick={onDelete} className="inline-flex min-h-11 items-center gap-1 rounded-md border border-red-200 px-3 text-sm font-bold text-red-700"><Trash2 size={16} />Delete item</button></div></div>{expanded && <><OcrOutput text={item.ocrOutput} categories={item.ocrCategories} />{suggestions.length > 0 && <div className="mt-4 rounded-lg border border-emerald-200 bg-emerald-50 p-3"><strong className="text-sm text-emerald-950">Name suggestions</strong><div className="mt-2 flex flex-wrap gap-2">{suggestions.map((suggestion) => <button key={suggestion} type="button" onClick={() => updateName(suggestion, "database")} className="rounded-md border border-emerald-300 bg-white px-3 py-2 text-sm font-bold text-emerald-900">{suggestion}</button>)}</div></div>}{duplicate && <div className="mt-4 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm font-semibold text-amber-950"><AlertTriangle className="mr-2 inline" size={16} />Possible duplicate of {duplicate.chemicalName.value}. Use Combine duplicates after confirming the name and size.</div>}<div className="mt-4 grid gap-3 sm:grid-cols-2"><FieldEditor label="Chemical Name" value={item.chemicalName.value ?? ""} confidence={item.chemicalName.confidence} source={item.chemicalName.source} onChange={(v) => updateField("chemicalName", v)} /><FieldEditor label="Quantity" type="number" value={item.quantity.value ?? ""} confidence={item.quantity.confidence} source={item.quantity.source} onChange={(v) => updateField("quantity", v)} /><FieldEditor label="Container Size" type="number" value={item.containerSize.value ?? ""} confidence={item.containerSize.confidence} source={item.containerSize.source} onChange={(v) => updateField("containerSize", v)} /><FieldEditor label="Concentration" value={item.concentration.value ?? ""} confidence={item.concentration.confidence} source={item.concentration.source} placeholder="e.g. 4% in methanol, 0.1 M" onChange={(v) => updateField("concentration", v)} /><Label text={`Unit · source: ${item.unit.source}`}><select className={`input ${confidenceNeedsReview(item.unit.confidence) ? "review-field" : ""}`} value={item.unit.value ?? ""} onChange={(e) => updateField("unit", e.target.value)}>{units.map((unit) => <option key={unit}>{unit}</option>)}</select></Label><Label text={`Physical State · source: ${item.physicalState.source}`}><select className={`input ${item.physicalState.value === "Unknown" || confidenceNeedsReview(item.physicalState.confidence) ? "review-field" : ""}`} value={item.physicalState.value ?? "Unknown"} onChange={(e) => updateField("physicalState", e.target.value)}>{states.map((state) => <option key={state}>{state}</option>)}</select></Label></div><div className="mt-4 grid gap-3 sm:grid-cols-3"><button onClick={() => { rememberCorrection(item, item.chemicalName.value ?? ""); onUpdate({ ...item, status: "Confirmed", confidence: 1 }); }} className="touch-button justify-center bg-emerald-700 text-white"><CheckCircle2 size={20} />CONFIRM</button><button onClick={() => onUpdate({ ...item, status: "Review Required" })} className="touch-button justify-center border border-amber-300 bg-white text-amber-900"><AlertTriangle size={20} />FLAG FOR REVIEW</button><button onClick={() => saveProduct({ id: crypto.randomUUID(), canonicalName: item.chemicalName.value ?? "Unnamed product", typicalContainerSize: item.containerSize.value ?? undefined, typicalConcentration: item.concentration.value ?? undefined, unit: item.unit.value ?? undefined, physicalState: item.physicalState.value ?? "Unknown" })} className="touch-button justify-center border border-slate-300 bg-white"><Database size={20} />Save product</button></div>{products.find((p) => p.canonicalName.toLowerCase() === item.chemicalName.value?.toLowerCase()) && <p className="mt-3 text-sm font-semibold text-emerald-800">Matched local product database. Confirm before applying known values.</p>}</>}</article>;
+  return <article className={`rounded-lg border bg-white p-4 ${needsReview ? "border-amber-300" : "border-slate-200"}`}><div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between"><button onClick={() => setExpanded((value) => !value)} className="min-h-11 flex-1 text-left"><div className="flex flex-wrap items-center gap-2"><h3 className="text-lg font-bold">{item.chemicalName.value || "Manual item"}</h3><ReviewBadge status={item.status} /></div><p className="mt-1 text-sm font-semibold text-slate-700">{item.quantity.value ?? "-"} × {item.containerSize.value ?? "-"} {item.unit.value ?? ""} · {item.physicalState.value ?? "Unknown"}{item.concentration.value ? ` · ${item.concentration.value}` : ""} · Confidence {Math.round(item.confidence * 100)}%</p>{needsReview && <p className="mt-1 flex items-center gap-1 text-sm font-semibold text-amber-900"><AlertTriangle size={15} />Review required</p>}</button><div className="flex flex-wrap gap-2"><button onClick={() => setExpanded((value) => !value)} className="inline-flex min-h-11 items-center rounded-md border border-slate-300 px-3 text-sm font-bold">{expanded ? "Hide details" : "Edit"}</button><button onClick={onDelete} className="inline-flex min-h-11 items-center gap-1 rounded-md border border-red-200 px-3 text-sm font-bold text-red-700"><Trash2 size={16} />Delete item</button></div></div>{expanded && <><OcrOutput text={item.ocrOutput} categories={item.ocrCategories} />{suggestions.length > 0 && <div className="mt-4 rounded-lg border border-emerald-200 bg-emerald-50 p-3"><strong className="text-sm text-emerald-950">Name suggestions</strong><div className="mt-2 flex flex-wrap gap-2">{suggestions.map((suggestion) => <button key={suggestion} type="button" onClick={() => updateName(suggestion, "database")} className="rounded-md border border-emerald-300 bg-white px-3 py-2 text-sm font-bold text-emerald-900">{suggestion}</button>)}</div></div>}{duplicate && <div className="mt-4 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm font-semibold text-amber-950"><AlertTriangle className="mr-2 inline" size={16} />Possible duplicate of {duplicate.chemicalName.value}. Use Combine duplicates after confirming the name and size.</div>}<div className="mt-4 grid gap-3 sm:grid-cols-2"><FieldEditor label="Chemical Name" value={item.chemicalName.value ?? ""} confidence={item.chemicalName.confidence} source={item.chemicalName.source} onChange={(v) => updateField("chemicalName", v)} /><FieldEditor label="Quantity" type="number" value={item.quantity.value ?? ""} confidence={item.quantity.confidence} source={item.quantity.source} onChange={(v) => updateField("quantity", v)} /><FieldEditor label="Container Size" type="number" value={item.containerSize.value ?? ""} confidence={item.containerSize.confidence} source={item.containerSize.source} onChange={(v) => updateField("containerSize", v)} /><FieldEditor label="Concentration" value={item.concentration.value ?? ""} confidence={item.concentration.confidence} source={item.concentration.source} placeholder="e.g. 4% in methanol, 0.1 M" onChange={(v) => updateField("concentration", v)} /><Label text={`Unit · source: ${item.unit.source}`}><select className={`input ${confidenceNeedsReview(item.unit.confidence) ? "review-field" : ""}`} value={item.unit.value ?? ""} onChange={(e) => updateField("unit", e.target.value)}>{units.map((unit) => <option key={unit}>{unit}</option>)}</select></Label><Label text={`Physical State · source: ${item.physicalState.source}`}><select className={`input ${item.physicalState.value === "Unknown" || confidenceNeedsReview(item.physicalState.confidence) ? "review-field" : ""}`} value={item.physicalState.value ?? "Unknown"} onChange={(e) => updateField("physicalState", e.target.value)}>{states.map((state) => <option key={state}>{state}</option>)}</select></Label></div><div className="mt-4 grid gap-3 sm:grid-cols-3"><button onClick={() => { rememberCorrection(item, item.chemicalName.value ?? "", correctionStorageKey); onUpdate({ ...item, status: "Confirmed", confidence: 1 }); }} className="touch-button justify-center bg-emerald-700 text-white"><CheckCircle2 size={20} />CONFIRM</button><button onClick={() => onUpdate({ ...item, status: "Review Required" })} className="touch-button justify-center border border-amber-300 bg-white text-amber-900"><AlertTriangle size={20} />FLAG FOR REVIEW</button><button onClick={() => saveProduct({ id: crypto.randomUUID(), canonicalName: item.chemicalName.value ?? "Unnamed product", typicalContainerSize: item.containerSize.value ?? undefined, typicalConcentration: item.concentration.value ?? undefined, unit: item.unit.value ?? undefined, physicalState: item.physicalState.value ?? "Unknown" })} className="touch-button justify-center border border-slate-300 bg-white"><Database size={20} />Save product</button></div>{products.find((p) => p.canonicalName.toLowerCase() === item.chemicalName.value?.toLowerCase()) && <p className="mt-3 text-sm font-semibold text-emerald-800">Matched local product database. Confirm before applying known values.</p>}</>}</article>;
 }
 function OcrOutput({ text, categories }: { text?: string; categories?: OcrCategories }) {
   const groups = categories ? [
@@ -323,8 +412,8 @@ function OcrOutput({ text, categories }: { text?: string; categories?: OcrCatego
   return <details className="mt-4 rounded-lg border border-slate-200 bg-slate-50 p-3" open><summary className="cursor-pointer text-sm font-bold text-slate-800">OCR output and categories</summary>{groups.length > 0 && <div className="mt-3 grid gap-2 sm:grid-cols-2">{groups.filter(([, values]) => values.length > 0).map(([label, values]) => <div key={label} className="rounded-md border border-slate-200 bg-white p-2"><strong className="text-xs text-slate-500">{label}</strong><p className="mt-1 text-sm font-semibold text-slate-800">{values.join(" · ")}</p></div>)}</div>}<pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-md bg-white p-3 text-xs font-semibold leading-5 text-slate-700">{text?.trim() || "No raw OCR text was captured for this item."}</pre></details>;
 }
 type LearnedCorrection = { key: string; from: string; to: string; count: number; updatedAt: string };
-function applyLearnedCorrection(item: InventoryItem): InventoryItem {
-  const match = readCorrections().find((correction) => correctionMatchesItem(correction, item));
+function applyLearnedCorrection(item: InventoryItem, correctionsKey = correctionKey): InventoryItem {
+  const match = readCorrections(correctionsKey).find((correction) => correctionMatchesItem(correction, item));
   if (!match) return item;
   return {
     ...item,
@@ -333,26 +422,26 @@ function applyLearnedCorrection(item: InventoryItem): InventoryItem {
     notes: [item.notes, `Applied learned correction from "${match.from}".`].filter(Boolean).join(" "),
   };
 }
-function rememberCorrection(item: InventoryItem, correctedName: string) {
+function rememberCorrection(item: InventoryItem, correctedName: string, correctionsKey = correctionKey) {
   const from = item.chemicalName.value?.trim();
   const to = correctedName.trim();
   if (!from || !to || from === "UNKNOWN PRODUCT" || normalizeName(from) === normalizeName(to)) return;
   const key = correctionSignature(item, from);
-  const current = readCorrections();
+  const current = readCorrections(correctionsKey);
   const existing = current.find((correction) => correction.key === key);
   const next = existing
     ? current.map((correction) => correction.key === key ? { ...correction, to, count: correction.count + 1, updatedAt: new Date().toISOString() } : correction)
     : [{ key, from, to, count: 1, updatedAt: new Date().toISOString() }, ...current];
   try {
-    localStorage.setItem(correctionKey, JSON.stringify(next.slice(0, 80)));
+    localStorage.setItem(correctionsKey, JSON.stringify(next.slice(0, 80)));
   } catch {
     // Corrections are an enhancement; scanning should continue if storage is unavailable.
   }
 }
-function readCorrections(): LearnedCorrection[] {
+function readCorrections(correctionsKey = correctionKey): LearnedCorrection[] {
   if (typeof window === "undefined") return [];
   try {
-    const parsed = JSON.parse(localStorage.getItem(correctionKey) ?? "[]") as LearnedCorrection[];
+    const parsed = JSON.parse(localStorage.getItem(correctionsKey) ?? "[]") as LearnedCorrection[];
     return Array.isArray(parsed) ? parsed.filter((item) => item.key && item.to) : [];
   } catch {
     return [];
@@ -367,8 +456,8 @@ function correctionSignature(item: InventoryItem, fallbackName: string) {
   const raw = item.ocrOutput ? normalizeName(item.ocrOutput).slice(0, 120) : "";
   return normalizeName([catalog, fallbackName, raw].filter(Boolean).join("|"));
 }
-function buildNameSuggestions(item: InventoryItem) {
-  const learned = readCorrections()
+function buildNameSuggestions(item: InventoryItem, correctionsKey = correctionKey) {
+  const learned = readCorrections(correctionsKey)
     .filter((correction) => correctionMatchesItem(correction, item))
     .map((correction) => correction.to);
   const chemicalCandidates = [

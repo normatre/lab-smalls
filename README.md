@@ -25,6 +25,16 @@ npm run dev
 
 Open `http://localhost:3000`.
 
+## Company sales demo
+
+The public sales demo opens with fictional sample drums and review items:
+
+```text
+https://normatre.github.io/lab-smalls/?demo=1
+```
+
+The **Sales demo** button in the app opens the same isolated demo mode. The demo kit includes a buyer-facing overview, a five-minute walkthrough, and a pilot discovery checklist in [`sales-demo/`](sales-demo/README.md).
+
 This workspace was bootstrapped with pnpm because npm/npx was not available in the local Codex runtime, but the project scripts are standard npm scripts.
 
 ## Static HTML / GitHub Pages
