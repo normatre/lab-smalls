@@ -258,6 +258,7 @@ type BrowserVoiceRecognition = {
   interimResults: boolean;
   onresult: ((event: VoiceRecognitionEvent) => void) | null;
   onerror: ((event: { error: string }) => void) | null;
+  onstart: (() => void) | null;
   onend: (() => void) | null;
   start: () => void;
   stop: () => void;
@@ -272,6 +273,8 @@ function CameraScanner({ drum, onUpdate, openAiApiKey, correctionStorageKey }: {
   const audioChunksRef = useRef<Blob[]>([]);
   const recognitionRef = useRef<BrowserVoiceRecognition | null>(null);
   const transcriptRef = useRef("");
+  const stopRequestedRef = useRef(false);
+  const recognitionErrorRef = useRef("");
   const [processing, setProcessing] = useState(false);
   const [recording, setRecording] = useState(false);
   const [keylessSpeech, setKeylessSpeech] = useState(false);
@@ -348,7 +351,10 @@ function CameraScanner({ drum, onUpdate, openAiApiKey, correctionStorageKey }: {
   }
   async function toggleRecording() {
     if (recording) {
-      if (recognitionRef.current) recognitionRef.current.stop();
+      if (recognitionRef.current) {
+        stopRequestedRef.current = true;
+        recognitionRef.current.stop();
+      }
       else mediaRecorderRef.current?.stop();
       return;
     }
@@ -356,6 +362,8 @@ function CameraScanner({ drum, onUpdate, openAiApiKey, correctionStorageKey }: {
     setScanError("");
     setLiveTranscript("");
     transcriptRef.current = "";
+    stopRequestedRef.current = false;
+    recognitionErrorRef.current = "";
     setRecordingSeconds(0);
     setKeylessSpeech(false);
     try {
@@ -365,14 +373,16 @@ function CameraScanner({ drum, onUpdate, openAiApiKey, correctionStorageKey }: {
         recognition.lang = speechLanguage;
         recognition.continuous = true;
         recognition.interimResults = true;
+        recognition.onstart = () => setRecording(true);
         recognition.onresult = (event) => {
           const finalParts: string[] = [];
           const interimParts: string[] = [];
-          Array.from(event.results).forEach((result) => {
+          for (let index = 0; index < event.results.length; index += 1) {
+            const result = event.results[index];
             const phrase = result[0]?.transcript?.trim();
-            if (!phrase) return;
+            if (!phrase) continue;
             (result.isFinal ? finalParts : interimParts).push(phrase);
-          });
+          }
           const finalText = finalParts.join(" ");
           const currentText = [finalText, ...interimParts].filter(Boolean).join(" ");
           if (finalText) transcriptRef.current = finalText;
@@ -382,12 +392,36 @@ function CameraScanner({ drum, onUpdate, openAiApiKey, correctionStorageKey }: {
           }
         };
         recognition.onerror = (event) => {
-          setScanError(event.error === "not-allowed" ? "Microphone access is blocked. Allow microphone access in your browser and try again." : `Speech recognition stopped (${event.error}). You can retry or upload an audio file.`);
+          if (event.error === "no-speech") return;
+          recognitionErrorRef.current = event.error;
+          setScanError(event.error === "not-allowed" || event.error === "service-not-allowed"
+            ? "Microphone access is blocked. Allow microphone access for this site in your browser, then try again."
+            : event.error === "network"
+              ? "The browser speech service could not connect. Check your internet connection and retry."
+              : `Speech recognition stopped (${event.error}). You can edit the transcript below and process it.`);
         };
         recognition.onend = () => {
-          recognitionRef.current = null;
-          setRecording(false);
-          void processTranscript(transcriptRef.current);
+          if (stopRequestedRef.current) {
+            recognitionRef.current = null;
+            setRecording(false);
+            if (transcriptRef.current.trim()) void processTranscript(transcriptRef.current);
+            else setScanError("No words arrived from the browser. Check microphone permission and internet, then retry or enter the words below.");
+            return;
+          }
+          if (recognitionErrorRef.current) {
+            recognitionRef.current = null;
+            setRecording(false);
+            return;
+          }
+          window.setTimeout(() => {
+            if (!stopRequestedRef.current && recognitionRef.current === recognition) {
+              try { recognition.start(); } catch {
+                recognitionRef.current = null;
+                setRecording(false);
+                setScanError("The browser stopped listening. Retry, or enter the transcript below.");
+              }
+            }
+          }, 250);
         };
         recognitionRef.current = recognition;
         recognition.start();
@@ -414,9 +448,11 @@ function CameraScanner({ drum, onUpdate, openAiApiKey, correctionStorageKey }: {
       setRecording(true);
     } catch (error) {
       setScanError(error instanceof Error ? error.message : "Microphone access was denied.");
+      recognitionRef.current = null;
+      setRecording(false);
     }
   }
-  return <Panel title={`DRUM ${drum.drumId}`}><div className="flex min-h-56 items-center justify-center rounded-lg border-2 border-dashed border-slate-300 bg-slate-50 text-center"><div><Camera className="mx-auto mb-3 text-slate-500" size={44} /><p className="font-semibold">Camera area</p><p className="text-sm text-slate-600">Fill the frame with the label and avoid glare.</p><p className="mt-1 text-xs font-semibold text-slate-500">Automatic quality, label-crop and code checks</p></div></div>{Boolean(drum.scanImages?.length) && <div className="mt-3 grid grid-cols-4 gap-2">{drum.scanImages?.map((image, index) => <button type="button" key={`${drum.scanImageIds?.[index] ?? image.slice(0, 24)}-${index}`} aria-label={`Open scan ${index + 1}`} onClick={() => setOpenPhoto(image)} className="h-20 w-full overflow-hidden rounded-lg border border-slate-200 bg-slate-50"><img src={image} alt={`Chemical label scan ${index + 1}`} className="h-full w-full object-cover" /></button>)}</div>}{openPhoto && <div role="dialog" aria-modal="true" aria-label="Chemical label photo" onClick={() => setOpenPhoto(null)} className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-4"><div className="relative max-h-full max-w-5xl" onClick={(event) => event.stopPropagation()}><img src={openPhoto} alt="Full-size chemical label" className="max-h-[88vh] max-w-full rounded-lg object-contain" /><button type="button" onClick={() => setOpenPhoto(null)} className="touch-button absolute right-2 top-2 bg-white text-slate-950 shadow-lg">Close</button></div></div>}{Boolean(drum.scanWarnings?.length) && <div className="mt-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950">{drum.scanWarnings?.map((warning) => <p key={warning} className="flex gap-2"><AlertTriangle size={16} className="mt-0.5 shrink-0" />{warning}</p>)}</div>}{scanError && <p className="mt-3 rounded-lg border border-red-200 bg-red-50 p-3 text-sm font-semibold text-red-800" role="alert">{scanError}</p>}<div className="mt-4 grid grid-cols-3 gap-2"><MetricMini label="Images" value={drum.imagesScanned} /><MetricMini label="Detected" value={drum.items.length} /><MetricMini label="Review" value={completionBlockers(drum).length} /></div><input ref={fileRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={(e) => void processImage(e.target.files?.[0])} /><input ref={galleryRef} type="file" accept="image/*" className="hidden" onChange={(e) => void processImage(e.target.files?.[0])} /><input ref={audioFileRef} type="file" accept="audio/*,.webm,.m4a,.mp3,.wav,.ogg" className="hidden" onChange={(e) => void processAudio(e.target.files?.[0])} /><div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-3"><label className="grid gap-1 text-sm font-semibold text-slate-700">Speech language<select className="input" value={speechLanguage} disabled={recording || processing} onChange={(event) => setSpeechLanguage(event.target.value)}><option value="en-GB">English</option><option value="tr-TR">Türkçe</option></select></label><button type="button" disabled={processing || recording} onClick={() => fileRef.current?.click()} className="touch-button justify-center bg-slate-900 text-white"><Camera size={20} />TAKE PHOTO</button><button type="button" disabled={processing || recording} onClick={() => galleryRef.current?.click()} className="touch-button justify-center border border-slate-300 bg-white"><ImageUp size={20} />UPLOAD IMAGE</button><button type="button" disabled={processing} onClick={() => void toggleRecording()} className={`touch-button justify-center ${recording ? "bg-red-700 text-white" : "border border-emerald-300 bg-emerald-50 text-emerald-900"}`}>{recording ? <Square size={18} /> : <Mic size={20} />}{recording ? "STOP & ADD ITEM" : "START LIVE VOICE"}</button><button type="button" disabled={processing || recording} onClick={() => audioFileRef.current?.click()} className="touch-button justify-center border border-slate-300 bg-white"><ImageUp size={20} />UPLOAD AUDIO</button><a href="#review" className="touch-button justify-center border border-slate-300 bg-white"><AlertTriangle size={20} />REVIEW ITEMS</a><a href="#summary" className="touch-button justify-center bg-emerald-700 text-white"><CheckCircle2 size={20} />FINISH SCANNING</a></div><p className="mt-2 text-xs text-slate-500">Live speech works without an OpenAI key where your browser supports speech recognition. Audio file uploads use your saved API key.</p>{recording && <section role="status" aria-live="polite" className="mt-4 rounded-xl border border-red-200 bg-red-50 p-4"><div className="flex flex-wrap items-center justify-between gap-3"><div className="flex items-center gap-3"><span className="relative flex h-3 w-3"><span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-red-500 opacity-75" /><span className="relative inline-flex h-3 w-3 rounded-full bg-red-600" /></span><strong className="text-red-900">Listening live · {String(Math.floor(recordingSeconds / 60)).padStart(2, "0")}:{String(recordingSeconds % 60).padStart(2, "0")}</strong><div className="flex h-7 items-center gap-1" aria-label="Recording audio activity">{[0, 1, 2, 3, 4, 5, 6].map((bar) => <span key={bar} className="w-1 animate-pulse rounded-full bg-red-500" style={{ height: `${8 + ((bar * 7 + recordingSeconds) % 17)}px`, animationDelay: `${bar * 90}ms` }} />)}</div></div><span className="text-xs font-semibold text-red-800">{keylessSpeech ? "Browser speech · no API key" : "Recording · OpenAI transcription after stop"}</span></div><p className="mt-3 min-h-12 rounded-lg bg-white p-3 text-sm text-slate-800">{liveTranscript || (keylessSpeech ? "Your recognized words will appear here as you speak…" : "Audio is recording. Speech will be transcribed when you stop.")}</p><p className="mt-2 text-xs text-slate-600">Say the chemical name, quantity, package size and physical state. Press Stop to add it to Review Items.</p></section>}{processing && <p className="mt-3 text-sm font-semibold text-amber-800" aria-live="polite">Adding recognized speech to the review list…</p>}</Panel>;
+  return <Panel title={`DRUM ${drum.drumId}`}><div className="flex min-h-56 items-center justify-center rounded-lg border-2 border-dashed border-slate-300 bg-slate-50 text-center"><div><Camera className="mx-auto mb-3 text-slate-500" size={44} /><p className="font-semibold">Camera area</p><p className="text-sm text-slate-600">Fill the frame with the label and avoid glare.</p><p className="mt-1 text-xs font-semibold text-slate-500">Automatic quality, label-crop and code checks</p></div></div>{Boolean(drum.scanImages?.length) && <div className="mt-3 grid grid-cols-4 gap-2">{drum.scanImages?.map((image, index) => <button type="button" key={`${drum.scanImageIds?.[index] ?? image.slice(0, 24)}-${index}`} aria-label={`Open scan ${index + 1}`} onClick={() => setOpenPhoto(image)} className="h-20 w-full overflow-hidden rounded-lg border border-slate-200 bg-slate-50"><img src={image} alt={`Chemical label scan ${index + 1}`} className="h-full w-full object-cover" /></button>)}</div>}{openPhoto && <div role="dialog" aria-modal="true" aria-label="Chemical label photo" onClick={() => setOpenPhoto(null)} className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-4"><div className="relative max-h-full max-w-5xl" onClick={(event) => event.stopPropagation()}><img src={openPhoto} alt="Full-size chemical label" className="max-h-[88vh] max-w-full rounded-lg object-contain" /><button type="button" onClick={() => setOpenPhoto(null)} className="touch-button absolute right-2 top-2 bg-white text-slate-950 shadow-lg">Close</button></div></div>}{Boolean(drum.scanWarnings?.length) && <div className="mt-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950">{drum.scanWarnings?.map((warning) => <p key={warning} className="flex gap-2"><AlertTriangle size={16} className="mt-0.5 shrink-0" />{warning}</p>)}</div>}{scanError && <p className="mt-3 rounded-lg border border-red-200 bg-red-50 p-3 text-sm font-semibold text-red-800" role="alert">{scanError}</p>}<div className="mt-4 grid grid-cols-3 gap-2"><MetricMini label="Images" value={drum.imagesScanned} /><MetricMini label="Detected" value={drum.items.length} /><MetricMini label="Review" value={completionBlockers(drum).length} /></div><input ref={fileRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={(e) => void processImage(e.target.files?.[0])} /><input ref={galleryRef} type="file" accept="image/*" className="hidden" onChange={(e) => void processImage(e.target.files?.[0])} /><input ref={audioFileRef} type="file" accept="audio/*,.webm,.m4a,.mp3,.wav,.ogg" className="hidden" onChange={(e) => void processAudio(e.target.files?.[0])} /><div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-3"><label className="grid gap-1 text-sm font-semibold text-slate-700">Speech language<select className="input" value={speechLanguage} disabled={recording || processing} onChange={(event) => setSpeechLanguage(event.target.value)}><option value="en-GB">English</option><option value="tr-TR">Türkçe</option></select></label><button type="button" disabled={processing || recording} onClick={() => fileRef.current?.click()} className="touch-button justify-center bg-slate-900 text-white"><Camera size={20} />TAKE PHOTO</button><button type="button" disabled={processing || recording} onClick={() => galleryRef.current?.click()} className="touch-button justify-center border border-slate-300 bg-white"><ImageUp size={20} />UPLOAD IMAGE</button><button type="button" disabled={processing} onClick={() => void toggleRecording()} className={`touch-button justify-center ${recording ? "bg-red-700 text-white" : "border border-emerald-300 bg-emerald-50 text-emerald-900"}`}>{recording ? <Square size={18} /> : <Mic size={20} />}{recording ? "STOP & ADD ITEM" : "START LIVE VOICE"}</button><button type="button" disabled={processing || recording} onClick={() => audioFileRef.current?.click()} className="touch-button justify-center border border-slate-300 bg-white"><ImageUp size={20} />UPLOAD AUDIO</button><a href="#review" className="touch-button justify-center border border-slate-300 bg-white"><AlertTriangle size={20} />REVIEW ITEMS</a><a href="#summary" className="touch-button justify-center bg-emerald-700 text-white"><CheckCircle2 size={20} />FINISH SCANNING</a></div><p className="mt-2 text-xs text-slate-500">Live speech works without an OpenAI key where your browser supports speech recognition. Audio file uploads use your saved API key.</p>{recording && <section role="status" aria-live="polite" className="mt-4 rounded-xl border border-red-200 bg-red-50 p-4"><div className="flex flex-wrap items-center justify-between gap-3"><div className="flex items-center gap-3"><span className="relative flex h-3 w-3"><span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-red-500 opacity-75" /><span className="relative inline-flex h-3 w-3 rounded-full bg-red-600" /></span><strong className="text-red-900">Listening live · {String(Math.floor(recordingSeconds / 60)).padStart(2, "0")}:{String(recordingSeconds % 60).padStart(2, "0")}</strong><div className="flex h-7 items-center gap-1" aria-label="Recording audio activity">{[0, 1, 2, 3, 4, 5, 6].map((bar) => <span key={bar} className="w-1 animate-pulse rounded-full bg-red-500" style={{ height: `${8 + ((bar * 7 + recordingSeconds) % 17)}px`, animationDelay: `${bar * 90}ms` }} />)}</div></div><span className="text-xs font-semibold text-red-800">{keylessSpeech ? "Browser speech · no API key" : "Recording · OpenAI transcription after stop"}</span></div><p className="mt-3 min-h-12 rounded-lg bg-white p-3 text-sm text-slate-800">{liveTranscript || (keylessSpeech ? "Your recognized words will appear here as you speak…" : "Audio is recording. Speech will be transcribed when you stop.")}</p><p className="mt-2 text-xs text-slate-600">Say the chemical name, quantity, package size and physical state. Press Stop to add it to Review Items.</p></section>}{!recording && !processing && (scanError || liveTranscript) && <form className="mt-3 grid gap-2 rounded-lg border border-slate-200 bg-slate-50 p-3" onSubmit={(event) => { event.preventDefault(); void processTranscript(liveTranscript); }}><label className="grid gap-2 text-sm font-semibold text-slate-700">Transcript · edit if needed<textarea className="input min-h-20" value={liveTranscript} onChange={(event) => { setLiveTranscript(event.target.value); transcriptRef.current = event.target.value; }} placeholder="Type the chemical name and details if speech was not recognized." /></label><button type="submit" disabled={!liveTranscript.trim()} className="touch-button justify-center bg-emerald-700 text-white">PROCESS TRANSCRIPT</button></form>}{processing && <p className="mt-3 text-sm font-semibold text-amber-800" aria-live="polite">Adding recognized speech to the review list…</p>}</Panel>;
 }
 
 async function prepareCameraImage(file: File) {
