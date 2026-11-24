@@ -221,10 +221,12 @@ export class MockChemicalVisionService implements ChemicalVisionService {
     const verifiedName = lookup && lookup.confidence >= 0.92 && !lookup.reviewRequired && !namesConflict(name, lookup.name)
       ? lookup.name
       : name;
-    const quantity = extracted?.quantity ?? heuristic.quantity;
-    const size = extracted?.containerSize ?? heuristic.size;
-    const unit = normalizeUnit(extracted?.unit ?? heuristic.unit);
-    const spokenState = normalizeState(extracted?.physicalState ?? heuristic.state);
+    // Explicit values heard in the transcript take precedence over model guesses.
+    const quantity = heuristic.quantity ?? extracted?.quantity ?? null;
+    const size = heuristic.size ?? extracted?.containerSize ?? null;
+    const unit = normalizeUnit(heuristic.unit ?? extracted?.unit);
+    const explicitlySpokenState = heuristic.state !== "Unknown" ? heuristic.state : null;
+    const spokenState = explicitlySpokenState ?? normalizeState(extracted?.physicalState) ?? "Unknown";
     const state = spokenState !== "Unknown" ? spokenState : lookup?.physicalState ?? "Unknown";
     const confidence = Math.max(0.35, Math.min(0.98, extracted?.confidence ?? (lookup?.confidence && !lookup.reviewRequired ? lookup.confidence : 0.68)));
     const source: FieldSource = "voice";
@@ -252,21 +254,30 @@ export class MockChemicalVisionService implements ChemicalVisionService {
 
 function extractVoiceFields(transcript: string) {
   const text = transcript.replace(/\s+/g, " ").trim();
-  const quantityMatch = text.match(/\b(\d+|one|two|three|four|five|six|seven|eight|nine|ten|a|an|bir|iki|üç|uc|dört|dort|beş|bes|altı|alti|on)\s+(?:adet\s+)?(?:bottles?|containers?|drums?|jars?|vials?|şişe|sise|kap|tüp|tup|kavanoz)\b/i)
-    ?? text.match(/\b(?:quantity|miktar)\s*(?:is|:)?\s*(\d+)\b/i);
-  const numberWords: Record<string, number> = { one: 1, a: 1, an: 1, two: 2, three: 3, uc: 3, üç: 3, four: 4, dört: 4, dort: 4, five: 5, beş: 5, bes: 5, six: 6, altı: 6, alti: 6, seven: 7, eight: 8, nine: 9, ten: 10, bir: 1, iki: 2, on: 10 };
+  const normalized = text.normalize("NFD").replace(/\p{Diacritic}/gu, "").replace(/ı/g, "i");
+  const numberToken = "(\\d+|one|two|three|four|five|six|seven|eight|nine|ten|a|an|bir|iki|uc|dort|bes|alti|on)";
+  const quantityNouns = "(?:bottles?|containers?|drums?|jars?|vials?|adet|sise|siseler|kap|tupler?|kavanoz)";
+  const amountPattern = "(?:\\d+(?:[.,]\\d+)?\\s*(?:millilit(?:er|re)s?|mililitre?s?|ml|lit(?:er|re)s?|litre?s?|l|kilograms?|kilogram|kg|grams?|gram|g)\\s*(?:each|per container|each container)?\\s*)?";
+  const quantityMatch = normalized.match(new RegExp(`\\b${numberToken}\\s+${amountPattern}${quantityNouns}\\b`, "i"))
+    ?? normalized.match(new RegExp(`\\b(?:quantity|qty|miktar|number of containers?)\\s*(?:is|are|of|:|=)?\\s*${numberToken}\\b`, "i"));
+  const numberWords: Record<string, number> = { one: 1, a: 1, an: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, bir: 1, iki: 2, uc: 3, dort: 4, bes: 5, alti: 6, on: 10 };
   const quantity = quantityMatch ? (Number(quantityMatch[1]) || numberWords[quantityMatch[1].toLowerCase()] || null) : null;
-  const sizeMatch = text.match(/\b(\d+(?:[.,]\d+)?)\s*(millilit(?:er|re)s?|mililitre?s?|ml|lit(?:er|re)s?|litre?s?|l|kilograms?|kilogram|kg|grams?|gram|g)\b/i);
+  const sizeMatch = normalized.match(/\b(\d+(?:[.,]\d+)?)\s*[, ]*\s*(millilit(?:er|re)s?|mililitre?s?|ml|lit(?:er|re)s?|litre?s?|l|kilograms?|kilogram|kg|grams?|gram|g)\b/i);
   const unitText = sizeMatch?.[2].toLowerCase();
-  const unit: Unit | null = !unitText ? null : /^(ml|milliliters?|millilitres?|mililitres?)$/.test(unitText) ? "mL" : /^(l|liters?|litres?|litres?)$/.test(unitText) ? "L" : /^(kg|kilograms?|kilogram)$/.test(unitText) ? "kg" : "g";
+  const unit: Unit | null = !unitText ? null : /^(ml|milliliters?|millilitres?|mililitres?)$/.test(unitText) ? "mL" : /^(l|liters?|litres?)$/.test(unitText) ? "L" : /^(kg|kilograms?|kilogram)$/.test(unitText) ? "kg" : "g";
   const parsedSize = sizeMatch ? Number(sizeMatch[1].replace(",", ".")) : null;
-  const stateMatch = text.match(/\b(solid|liquid|gas|powder|crystals?|granules?|katı|kati|sıvı|sivi|gaz|toz|kristal)\b/i);
-  const state = !stateMatch ? "Unknown" : /liquid|sıvı|sivi/i.test(stateMatch[1]) ? "Liquid" : /gas|gaz/i.test(stateMatch[1]) ? "Gas" : "Solid";
-  const withoutDetails = text
-    .replace(quantityMatch?.[0] ?? "\u0000", " ")
-    .replace(sizeMatch?.[0] ?? "\u0000", " ")
-    .replace(stateMatch?.[0] ?? "\u0000", " ")
-    .replace(/\b(chemical|name|quantity|size|state|is|about|of|please|add|this|to|the|drum|container|containers|bottle|bottles|and|at|i|have|we|got|ekle|kimyasal|ismi|adı|adi|miktar|boyut|şişe|sise|adet|var|olarak|tane|lütfen|lutfen|gram|mililitre|litre)\b/gi, " ")
+  const stateMatch = normalized.match(/\b(solid|liquid|gas|powder|crystals?|granules?|kati|sivi|gaz|toz|kristal)\b/i);
+  const state: PhysicalState = !stateMatch ? "Unknown" : /liquid|sivi/i.test(stateMatch[1]) ? "Liquid" : /gas|gaz/i.test(stateMatch[1]) ? "Gas" : "Solid";
+  const detailMatches = [quantityMatch, sizeMatch, stateMatch]
+    .filter((match): match is RegExpMatchArray => Boolean(match))
+    .sort((a, b) => (b.index ?? 0) - (a.index ?? 0));
+  let withoutDetails = text;
+  for (const match of detailMatches) {
+    const start = match.index ?? 0;
+    withoutDetails = `${withoutDetails.slice(0, start)} ${withoutDetails.slice(start + match[0].length)}`;
+  }
+  withoutDetails = withoutDetails
+    .replace(/(?<![\p{L}\p{N}])(chemical|name|quantity|qty|size|state|physical|unit|is|are|about|of|please|add|this|to|the|drum|container|containers|bottle|bottles|and|at|i|have|we|got|ekle|kimyasal|ismi|adi|adı|madde|urun|ürün|miktar|boyut|sise|şişe|şişeler|adet|var|olarak|tane|lutfen|lütfen|each|per|contains|containing)(?![\p{L}\p{N}])/giu, " ")
     .replace(/[,:;]+/g, " ").replace(/\s+/g, " ").trim();
   const name = withoutDetails.length >= 3 ? withoutDetails : "";
   return { name, quantity, size: parsedSize, unit, state };
