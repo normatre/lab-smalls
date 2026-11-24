@@ -4,7 +4,7 @@ import { lookupChemicalEverywhere, lookupChemicalFromOcr, lookupPubChemFromText 
 export type ChemicalVisionService = {
   analyzeChemicalImage(image: File | Blob, options?: { openAiApiKey?: string }): Promise<{ items: DetectedChemical[]; warnings: string[] }>;
   analyzeChemicalAudio(audio: File, options?: { openAiApiKey?: string }): Promise<{ items: DetectedChemical[]; warnings: string[]; transcript: string }>;
-  analyzeChemicalTranscript(transcript: string, options?: { openAiApiKey?: string }): Promise<{ items: DetectedChemical[]; warnings: string[] }>;
+  analyzeChemicalTranscript(transcript: string): Promise<{ items: DetectedChemical[]; warnings: string[] }>;
 };
 
 type FieldSource = "label" | "database" | "image" | "inferred" | "voice";
@@ -190,64 +190,44 @@ export class MockChemicalVisionService implements ChemicalVisionService {
     const result = await response.json() as { text?: string };
     const transcript = result.text?.trim() ?? "";
     if (!transcript) throw new Error("No speech was detected in the audio.");
-    const analyzed = await this.analyzeChemicalTranscript(transcript, options);
+    const analyzed = await this.analyzeChemicalTranscript(transcript);
     return { ...analyzed, transcript };
   }
 
-  async analyzeChemicalTranscript(transcript: string, options?: { openAiApiKey?: string }): Promise<{ items: DetectedChemical[]; warnings: string[] }> {
+  async analyzeChemicalTranscript(transcript: string): Promise<{ items: DetectedChemical[]; warnings: string[] }> {
     const cleanTranscript = transcript.trim();
     if (!cleanTranscript) return { items: [], warnings: ["No speech was detected. Say the chemical name and any known package details."] };
-    const apiKey = options?.openAiApiKey?.trim();
-    let extracted: VisionExtract | null = null;
-    if (apiKey) {
-      const response = await requestOpenAIVision(
-        apiKey,
-        [],
-        `Extract one lab inventory item from this spoken description. Treat it as speech, not label OCR. Preserve the full chemical/product name including salt forms, hydrate, and formulation words. Distinguish quantity (number of containers) from package size (amount per container). Convert spoken number words to numbers. Normalize units to g, kg, mL, or L. Physical state must be Solid, Liquid, Gas, or Unknown; set it only when spoken explicitly or unambiguous from the named product. Never guess quantity, size, or state when absent. Return compact JSON with chemicalName, quantity, containerSize, unit, physicalState, confidence (0-1), nameConfidence (0-1), and ocrLines containing the original transcript. If no chemical is named, return chemicalName as empty string. Spoken description: ${JSON.stringify(cleanTranscript)}`,
-        "high",
-      );
-      extracted = response ? parseVisionJson(extractOpenAIOutputText(response)) : null;
-    }
-
     const heuristic = extractVoiceFields(cleanTranscript);
-    const rawName = heuristic.name || extracted?.chemicalName?.trim() || "";
-    const name = rawName ? cleanChemicalNameCandidate(rawName) : "";
+    const name = heuristic.name.replace(/\s+/g, " ").trim();
     if (!name || name.toLowerCase() === "unknown product") {
-      return { items: [], warnings: ["Could not identify a chemical name. Try saying the product name clearly, then quantity and package size."] };
+      return { items: [], warnings: ["Could not isolate a chemical name from the transcript. Edit the transcript so it contains the exact product name, then process it again."] };
     }
 
-    const nameConfidence = heuristic.name ? Math.max(0.82, extracted?.nameConfidence ?? 0) : extracted?.nameConfidence ?? (extracted?.chemicalName ? 0.86 : 0.55);
-    const lookup = await lookupChemicalFromOcr(cleanTranscript, { name });
-    const verifiedName = lookup && lookup.confidence >= 0.92 && !lookup.reviewRequired && !namesConflict(name, lookup.name)
-      ? lookup.name
-      : name;
-    // Explicit values heard in the transcript take precedence over model guesses.
-    // A spoken entry describes one container unless the speaker gives an explicit count.
+    const nameConfidence = 0.86;
+    // Use only values parsed from the transcript. No chemical database or model
+    // is allowed to replace the name or supply unsaid package/state values.
     const quantity = heuristic.quantity ?? 1;
-    const size = heuristic.size ?? extracted?.containerSize ?? null;
-    const unit = normalizeUnit(heuristic.unit ?? extracted?.unit);
-    const explicitlySpokenState = heuristic.state !== "Unknown" ? heuristic.state : null;
-    const spokenState = explicitlySpokenState ?? normalizeState(extracted?.physicalState) ?? "Unknown";
-    const state = spokenState !== "Unknown" ? spokenState : lookup?.physicalState ?? "Unknown";
-    const confidence = Math.max(0.35, Math.min(0.98, extracted?.confidence ?? (lookup?.confidence && !lookup.reviewRequired ? lookup.confidence : 0.68)));
+    const size = heuristic.size;
+    const unit = heuristic.unit;
+    const state = heuristic.state;
+    const confidence = 0.82;
     const source: FieldSource = "voice";
     const item: DetectedChemical = {
-      chemicalName: sourced(verifiedName, Math.min(confidence, nameConfidence), lookup?.name === verifiedName ? "database" : source),
+      chemicalName: sourced(name, nameConfidence, source),
       quantity: sourced(quantity, heuristic.quantity === null ? 0.62 : confidence, heuristic.quantity === null ? "inferred" : source),
       containerSize: sourced(size, size === null ? 0.35 : confidence, source),
       concentration: sourced(null, 0.35, "image"),
       unit: sourced(unit, unit ? confidence : 0.35, source),
-      physicalState: sourced(state, state === "Unknown" ? 0.3 : spokenState === "Unknown" ? Math.min(0.82, lookup?.confidence ?? 0.75) : confidence, state === "Unknown" ? source : spokenState === "Unknown" ? "database" : source),
+      physicalState: sourced(state, state === "Unknown" ? 0.3 : confidence, source),
       confidence,
       sourceImage: "voice-input",
       ocrOutput: cleanOcrOutput(cleanTranscript),
-      ocrCategories: lookup?.categories,
     };
     const warnings = [
       "Voice input is a first pass. Confirm the chemical name and any details that were not spoken before saving the drum.",
       ...(heuristic.quantity === null ? ["No container count was stated; quantity was set to 1. Change it in Review Items if needed."] : []),
       ...(size === null ? ["Package size was not stated; enter the amount per container in Review Items."] : []),
-      ...(state === "Unknown" ? ["Physical state was not stated and could not be confirmed from the chemical database."] : []),
+      ...(state === "Unknown" ? ["Physical state was not stated; choose it in Review Items."] : []),
     ];
     return { items: [item], warnings };
   }
