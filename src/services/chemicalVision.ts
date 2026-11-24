@@ -252,22 +252,24 @@ export class MockChemicalVisionService implements ChemicalVisionService {
 
 function extractVoiceFields(transcript: string) {
   const text = transcript.replace(/\s+/g, " ").trim();
-  const quantityMatch = text.match(/\b(\d+|one|two|three|four|five|six|seven|eight|nine|ten|a|an)\s+(?:bottles?|containers?|drums?|jars?|vials?)\b/i);
-  const numberWords: Record<string, number> = { one: 1, a: 1, an: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10 };
+  const quantityMatch = text.match(/\b(\d+|one|two|three|four|five|six|seven|eight|nine|ten|a|an|bir|iki|üç|uc|dört|dort|beş|bes|altı|alti|on)\s+(?:adet\s+)?(?:bottles?|containers?|drums?|jars?|vials?|şişe|sise|kap|tüp|tup|kavanoz)\b/i)
+    ?? text.match(/\b(?:quantity|miktar)\s*(?:is|:)?\s*(\d+)\b/i);
+  const numberWords: Record<string, number> = { one: 1, a: 1, an: 1, two: 2, three: 3, uc: 3, üç: 3, four: 4, dört: 4, dort: 4, five: 5, beş: 5, bes: 5, six: 6, altı: 6, alti: 6, seven: 7, eight: 8, nine: 9, ten: 10, bir: 1, iki: 2, on: 10 };
   const quantity = quantityMatch ? (Number(quantityMatch[1]) || numberWords[quantityMatch[1].toLowerCase()] || null) : null;
-  const sizeMatch = text.match(/\b(\d+(?:\.\d+)?)\s*(millilit(?:er|re)s?|ml|lit(?:er|re)s?|l|kilograms?|kg|grams?|g)\b/i);
+  const sizeMatch = text.match(/\b(\d+(?:[.,]\d+)?)\s*(millilit(?:er|re)s?|mililitre?s?|ml|lit(?:er|re)s?|litre?s?|l|kilograms?|kilogram|kg|grams?|gram|g)\b/i);
   const unitText = sizeMatch?.[2].toLowerCase();
-  const unit: Unit | null = !unitText ? null : /^(ml|milliliters?|millilitres?)$/.test(unitText) ? "mL" : /^(l|liters?|litres?)$/.test(unitText) ? "L" : /^(kg|kilograms?)$/.test(unitText) ? "kg" : "g";
-  const stateMatch = text.match(/\b(solid|liquid|gas|powder|crystals?|granules?)\b/i);
-  const state = !stateMatch ? "Unknown" : /liquid/i.test(stateMatch[1]) ? "Liquid" : /gas/i.test(stateMatch[1]) ? "Gas" : "Solid";
+  const unit: Unit | null = !unitText ? null : /^(ml|milliliters?|millilitres?|mililitres?)$/.test(unitText) ? "mL" : /^(l|liters?|litres?|litres?)$/.test(unitText) ? "L" : /^(kg|kilograms?|kilogram)$/.test(unitText) ? "kg" : "g";
+  const parsedSize = sizeMatch ? Number(sizeMatch[1].replace(",", ".")) : null;
+  const stateMatch = text.match(/\b(solid|liquid|gas|powder|crystals?|granules?|katı|kati|sıvı|sivi|gaz|toz|kristal)\b/i);
+  const state = !stateMatch ? "Unknown" : /liquid|sıvı|sivi/i.test(stateMatch[1]) ? "Liquid" : /gas|gaz/i.test(stateMatch[1]) ? "Gas" : "Solid";
   const withoutDetails = text
     .replace(quantityMatch?.[0] ?? "\u0000", " ")
     .replace(sizeMatch?.[0] ?? "\u0000", " ")
     .replace(stateMatch?.[0] ?? "\u0000", " ")
-    .replace(/\b(chemical|name|quantity|size|state|is|about|of|please|add|this|to|the|drum|container|containers|bottle|bottles|and|at)\b/gi, " ")
+    .replace(/\b(chemical|name|quantity|size|state|is|about|of|please|add|this|to|the|drum|container|containers|bottle|bottles|and|at|i|have|we|got|ekle|kimyasal|ismi|adı|adi|miktar|boyut|şişe|sise|adet|var|olarak|tane|lütfen|lutfen|gram|mililitre|litre)\b/gi, " ")
     .replace(/[,:;]+/g, " ").replace(/\s+/g, " ").trim();
   const name = withoutDetails.length >= 3 ? withoutDetails : "";
-  return { name, quantity, size: sizeMatch ? Number(sizeMatch[1]) : null, unit, state };
+  return { name, quantity, size: parsedSize, unit, state };
 }
 
 type VisionExtract = {

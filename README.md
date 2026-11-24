@@ -115,7 +115,7 @@ The current UI uses typed demo data from `src/lib/demo-data.ts` so it runs immed
 7. Unknown products, unknown physical state, missing fields, or review status block finalisation.
 8. Export PDF, CSV, XLSX, or print view from the drum summary.
 
-Audio and OpenAI image recognition use the API key configured in **Settings** in the current browser. Recordings are sent to OpenAI for transcription and are not saved as drum attachments. Uploads must be no larger than 25 MB; supported formats include MP3, M4A, WAV, OGG and WebM. Every extracted value remains editable and requires operator review.
+Live microphone input uses browser speech recognition and does not need an OpenAI API key. Browser support and speech-service availability vary. Uploading a saved audio file still uses the API key configured in **Settings** and sends the recording to OpenAI; uploads must be no larger than 25 MB. Audio is not saved as a drum attachment. Every extracted value remains editable and requires operator review.
 
 ## AI Provider Boundary
 
@@ -133,7 +133,7 @@ analyzeChemicalImage(image): Promise<{ items: DetectedChemical[]; warnings: stri
 
 Replace `MockChemicalVisionService` with a real provider implementation when API credentials are available. Keep server-side validation before saving any detected item.
 
-The same service also provides `analyzeChemicalAudio` and `analyzeChemicalTranscript` for the normal application flow. Audio uses OpenAI's `gpt-transcribe` transcription model and then extracts chemical name, container quantity, package size/unit and physical state. The original transcript appears in the review card's OCR output area.
+The same service also provides `analyzeChemicalAudio` and `analyzeChemicalTranscript` for the normal application flow. Saved audio uses OpenAI's `gpt-transcribe` model; live browser recognition can pass its transcript into the same field extraction without an OpenAI key. Both flows extract chemical name, container quantity, package size/unit and physical state. The original transcript appears in the review card's OCR output area.
 
 ## Chemical Database Lookup
 
