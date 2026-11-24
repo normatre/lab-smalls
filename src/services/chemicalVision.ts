@@ -210,19 +210,20 @@ export class MockChemicalVisionService implements ChemicalVisionService {
     }
 
     const heuristic = extractVoiceFields(cleanTranscript);
-    const rawName = extracted?.chemicalName?.trim() || heuristic.name;
+    const rawName = heuristic.name || extracted?.chemicalName?.trim() || "";
     const name = rawName ? cleanChemicalNameCandidate(rawName) : "";
     if (!name || name.toLowerCase() === "unknown product") {
       return { items: [], warnings: ["Could not identify a chemical name. Try saying the product name clearly, then quantity and package size."] };
     }
 
-    const nameConfidence = extracted?.nameConfidence ?? (extracted?.chemicalName ? 0.86 : 0.55);
+    const nameConfidence = heuristic.name ? Math.max(0.82, extracted?.nameConfidence ?? 0) : extracted?.nameConfidence ?? (extracted?.chemicalName ? 0.86 : 0.55);
     const lookup = await lookupChemicalFromOcr(cleanTranscript, { name });
     const verifiedName = lookup && lookup.confidence >= 0.92 && !lookup.reviewRequired && !namesConflict(name, lookup.name)
       ? lookup.name
       : name;
     // Explicit values heard in the transcript take precedence over model guesses.
-    const quantity = heuristic.quantity ?? extracted?.quantity ?? null;
+    // A spoken entry describes one container unless the speaker gives an explicit count.
+    const quantity = heuristic.quantity ?? 1;
     const size = heuristic.size ?? extracted?.containerSize ?? null;
     const unit = normalizeUnit(heuristic.unit ?? extracted?.unit);
     const explicitlySpokenState = heuristic.state !== "Unknown" ? heuristic.state : null;
@@ -232,7 +233,7 @@ export class MockChemicalVisionService implements ChemicalVisionService {
     const source: FieldSource = "voice";
     const item: DetectedChemical = {
       chemicalName: sourced(verifiedName, Math.min(confidence, nameConfidence), lookup?.name === verifiedName ? "database" : source),
-      quantity: sourced(quantity, quantity === null ? 0.35 : confidence, source),
+      quantity: sourced(quantity, heuristic.quantity === null ? 0.62 : confidence, heuristic.quantity === null ? "inferred" : source),
       containerSize: sourced(size, size === null ? 0.35 : confidence, source),
       concentration: sourced(null, 0.35, "image"),
       unit: sourced(unit, unit ? confidence : 0.35, source),
@@ -244,7 +245,7 @@ export class MockChemicalVisionService implements ChemicalVisionService {
     };
     const warnings = [
       "Voice input is a first pass. Confirm the chemical name and any details that were not spoken before saving the drum.",
-      ...(quantity === null ? ["Quantity was not stated; enter the number of containers in Review Items."] : []),
+      ...(heuristic.quantity === null ? ["No container count was stated; quantity was set to 1. Change it in Review Items if needed."] : []),
       ...(size === null ? ["Package size was not stated; enter the amount per container in Review Items."] : []),
       ...(state === "Unknown" ? ["Physical state was not stated and could not be confirmed from the chemical database."] : []),
     ];
@@ -262,10 +263,13 @@ function extractVoiceFields(transcript: string) {
     ?? normalized.match(new RegExp(`\\b(?:quantity|qty|miktar|number of containers?)\\s*(?:is|are|of|:|=)?\\s*${numberToken}\\b`, "i"));
   const numberWords: Record<string, number> = { one: 1, a: 1, an: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, bir: 1, iki: 2, uc: 3, dort: 4, bes: 5, alti: 6, on: 10 };
   const quantity = quantityMatch ? (Number(quantityMatch[1]) || numberWords[quantityMatch[1].toLowerCase()] || null) : null;
-  const sizeMatch = normalized.match(/\b(\d+(?:[.,]\d+)?)\s*[, ]*\s*(millilit(?:er|re)s?|mililitre?s?|ml|lit(?:er|re)s?|litre?s?|l|kilograms?|kilogram|kg|grams?|gram|g)\b/i);
+  const sizeNumberToken = "(\\d+(?:[.,]\\d+)?|one|two|three|four|five|six|seven|eight|nine|ten|a|an|bir|iki|uc|dort|bes|alti|on)";
+  const sizeMatch = normalized.match(new RegExp(`\\b${sizeNumberToken}\\s*[, ]*\\s*(millilit(?:er|re)s?|mililitre?s?|ml|lit(?:er|re)s?|litre?s?|l|kilograms?|kilogram|kg|grams?|gram|g)\\b`, "i"));
   const unitText = sizeMatch?.[2].toLowerCase();
   const unit: Unit | null = !unitText ? null : /^(ml|milliliters?|millilitres?|mililitres?)$/.test(unitText) ? "mL" : /^(l|liters?|litres?)$/.test(unitText) ? "L" : /^(kg|kilograms?|kilogram)$/.test(unitText) ? "kg" : "g";
-  const parsedSize = sizeMatch ? Number(sizeMatch[1].replace(",", ".")) : null;
+  const sizeWords: Record<string, number> = { one: 1, a: 1, an: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, bir: 1, iki: 2, uc: 3, dort: 4, bes: 5, alti: 6, on: 10 };
+  const sizeValue = sizeMatch?.[1].toLowerCase();
+  const parsedSize = sizeValue ? (Number(sizeValue.replace(",", ".")) || sizeWords[sizeValue] || null) : null;
   const stateMatch = normalized.match(/\b(solid|liquid|gas|powder|crystals?|granules?|kati|sivi|gaz|toz|kristal)\b/i);
   const state: PhysicalState = !stateMatch ? "Unknown" : /liquid|sivi/i.test(stateMatch[1]) ? "Liquid" : /gas|gaz/i.test(stateMatch[1]) ? "Gas" : "Solid";
   const detailMatches = [quantityMatch, sizeMatch, stateMatch]
@@ -278,7 +282,7 @@ function extractVoiceFields(transcript: string) {
   }
   withoutDetails = withoutDetails
     .replace(/(?<![\p{L}\p{N}])(chemical|name|quantity|qty|size|state|physical|unit|is|are|about|of|please|add|this|to|the|drum|container|containers|bottle|bottles|and|at|i|have|we|got|ekle|kimyasal|ismi|adi|adı|madde|urun|ürün|miktar|boyut|sise|şişe|şişeler|adet|var|olarak|tane|lutfen|lütfen|each|per|contains|containing)(?![\p{L}\p{N}])/giu, " ")
-    .replace(/[,:;]+/g, " ").replace(/\s+/g, " ").trim();
+    .replace(/[.!?,;:]+/g, " ").replace(/\s+/g, " ").trim();
   const name = withoutDetails.length >= 3 ? withoutDetails : "";
   return { name, quantity, size: parsedSize, unit, state };
 }
