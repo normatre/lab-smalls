@@ -109,10 +109,13 @@ The current UI uses typed demo data from `src/lib/demo-data.ts` so it runs immed
 1. Open the dashboard.
 2. Use New Drum to create a drum like `LS-2026-003`.
 3. Use Active Drums to upload or capture an image.
-4. Mock AI extraction creates editable review cards.
-5. Confirm every item or add missing manual data.
-6. Unknown products, unknown physical state, missing fields, or review status block finalisation.
-7. Export PDF, CSV, XLSX, or print view from the drum summary.
+4. Or choose **Speak / Record** to dictate a chemical and its details, or **Upload Audio** to add a recording. Audio is transcribed and extracted into the same editable review cards as photo scans.
+5. Mock AI extraction creates editable review cards for image scans when no OpenAI key is configured.
+6. Confirm every item or add missing manual data.
+7. Unknown products, unknown physical state, missing fields, or review status block finalisation.
+8. Export PDF, CSV, XLSX, or print view from the drum summary.
+
+Audio and OpenAI image recognition use the API key configured in **Settings** in the current browser. Recordings are sent to OpenAI for transcription and are not saved as drum attachments. Uploads must be no larger than 25 MB; supported formats include MP3, M4A, WAV, OGG and WebM. Every extracted value remains editable and requires operator review.
 
 ## AI Provider Boundary
 
@@ -129,6 +132,8 @@ analyzeChemicalImage(image): Promise<{ items: DetectedChemical[]; warnings: stri
 ```
 
 Replace `MockChemicalVisionService` with a real provider implementation when API credentials are available. Keep server-side validation before saving any detected item.
+
+The same service also provides `analyzeChemicalAudio` and `analyzeChemicalTranscript` for the normal application flow. Audio uses OpenAI's `gpt-transcribe` transcription model and then extracts chemical name, container quantity, package size/unit and physical state. The original transcript appears in the review card's OCR output area.
 
 ## Chemical Database Lookup
 

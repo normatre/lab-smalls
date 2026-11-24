@@ -3,9 +3,11 @@ import { lookupChemicalEverywhere, lookupChemicalFromOcr, lookupPubChemFromText 
 
 export type ChemicalVisionService = {
   analyzeChemicalImage(image: File | Blob, options?: { openAiApiKey?: string }): Promise<{ items: DetectedChemical[]; warnings: string[] }>;
+  analyzeChemicalAudio(audio: File, options?: { openAiApiKey?: string }): Promise<{ items: DetectedChemical[]; warnings: string[]; transcript: string }>;
+  analyzeChemicalTranscript(transcript: string, options?: { openAiApiKey?: string }): Promise<{ items: DetectedChemical[]; warnings: string[] }>;
 };
 
-type FieldSource = "label" | "database" | "image" | "inferred";
+type FieldSource = "label" | "database" | "image" | "inferred" | "voice";
 type VisionProfile = { aspectRatio: number; redDominance: number; darkDominance: number; estimatedBottleCount: number };
 type ChemicalReference = {
   name: string;
@@ -166,6 +168,106 @@ export class MockChemicalVisionService implements ChemicalVisionService {
       warnings: ["No chemical name could be read from the label. Retake the photo closer and straighter."],
     };
   }
+
+  async analyzeChemicalAudio(audio: File, options?: { openAiApiKey?: string }): Promise<{ items: DetectedChemical[]; warnings: string[]; transcript: string }> {
+    const apiKey = options?.openAiApiKey?.trim();
+    if (!apiKey) throw new Error("Add your OpenAI API key in Settings before using audio input.");
+    if (!audio.size) throw new Error("The audio file is empty.");
+    if (audio.size > 25 * 1024 * 1024) throw new Error("Audio files must be 25 MB or smaller.");
+    const form = new FormData();
+    form.append("file", audio, audio.name || `lab-smalls-audio.${audio.type.includes("webm") ? "webm" : "audio"}`);
+    form.append("model", "gpt-transcribe");
+    form.append("prompt", "Transcribe laboratory chemical product names exactly, preserving chemical names, salt forms, quantities, package sizes, units, and physical states. Common context: laboratory chemicals, reagents, solutions, powders, crystals, bottles, drums.");
+    const response = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey}` },
+      body: form,
+    });
+    if (!response.ok) {
+      const detail = await response.json().catch(() => null) as { error?: { message?: string } } | null;
+      throw new Error(detail?.error?.message || "Audio transcription failed. Check the API key and try again.");
+    }
+    const result = await response.json() as { text?: string };
+    const transcript = result.text?.trim() ?? "";
+    if (!transcript) throw new Error("No speech was detected in the audio.");
+    const analyzed = await this.analyzeChemicalTranscript(transcript, options);
+    return { ...analyzed, transcript };
+  }
+
+  async analyzeChemicalTranscript(transcript: string, options?: { openAiApiKey?: string }): Promise<{ items: DetectedChemical[]; warnings: string[] }> {
+    const cleanTranscript = transcript.trim();
+    if (!cleanTranscript) return { items: [], warnings: ["No speech was detected. Say the chemical name and any known package details."] };
+    const apiKey = options?.openAiApiKey?.trim();
+    let extracted: VisionExtract | null = null;
+    if (apiKey) {
+      const response = await requestOpenAIVision(
+        apiKey,
+        [],
+        `Extract one lab inventory item from this spoken description. Treat it as speech, not label OCR. Preserve the full chemical/product name including salt forms, hydrate, and formulation words. Distinguish quantity (number of containers) from package size (amount per container). Convert spoken number words to numbers. Normalize units to g, kg, mL, or L. Physical state must be Solid, Liquid, Gas, or Unknown; set it only when spoken explicitly or unambiguous from the named product. Never guess quantity, size, or state when absent. Return compact JSON with chemicalName, quantity, containerSize, unit, physicalState, confidence (0-1), nameConfidence (0-1), and ocrLines containing the original transcript. If no chemical is named, return chemicalName as empty string. Spoken description: ${JSON.stringify(cleanTranscript)}`,
+        "high",
+      );
+      extracted = response ? parseVisionJson(extractOpenAIOutputText(response)) : null;
+    }
+
+    const heuristic = extractVoiceFields(cleanTranscript);
+    const rawName = extracted?.chemicalName?.trim() || heuristic.name;
+    const name = rawName ? cleanChemicalNameCandidate(rawName) : "";
+    if (!name || name.toLowerCase() === "unknown product") {
+      return { items: [], warnings: ["Could not identify a chemical name. Try saying the product name clearly, then quantity and package size."] };
+    }
+
+    const nameConfidence = extracted?.nameConfidence ?? (extracted?.chemicalName ? 0.86 : 0.55);
+    const lookup = await lookupChemicalFromOcr(cleanTranscript, { name });
+    const verifiedName = lookup && lookup.confidence >= 0.92 && !lookup.reviewRequired && !namesConflict(name, lookup.name)
+      ? lookup.name
+      : name;
+    const quantity = extracted?.quantity ?? heuristic.quantity;
+    const size = extracted?.containerSize ?? heuristic.size;
+    const unit = normalizeUnit(extracted?.unit ?? heuristic.unit);
+    const spokenState = normalizeState(extracted?.physicalState ?? heuristic.state);
+    const state = spokenState !== "Unknown" ? spokenState : lookup?.physicalState ?? "Unknown";
+    const confidence = Math.max(0.35, Math.min(0.98, extracted?.confidence ?? (lookup?.confidence && !lookup.reviewRequired ? lookup.confidence : 0.68)));
+    const source: FieldSource = "voice";
+    const item: DetectedChemical = {
+      chemicalName: sourced(verifiedName, Math.min(confidence, nameConfidence), lookup?.name === verifiedName ? "database" : source),
+      quantity: sourced(quantity, quantity === null ? 0.35 : confidence, source),
+      containerSize: sourced(size, size === null ? 0.35 : confidence, source),
+      concentration: sourced(null, 0.35, "image"),
+      unit: sourced(unit, unit ? confidence : 0.35, source),
+      physicalState: sourced(state, state === "Unknown" ? 0.3 : spokenState === "Unknown" ? Math.min(0.82, lookup?.confidence ?? 0.75) : confidence, state === "Unknown" ? source : spokenState === "Unknown" ? "database" : source),
+      confidence,
+      sourceImage: "voice-input",
+      ocrOutput: cleanOcrOutput(cleanTranscript),
+      ocrCategories: lookup?.categories,
+    };
+    const warnings = [
+      "Voice input is a first pass. Confirm the chemical name and any details that were not spoken before saving the drum.",
+      ...(quantity === null ? ["Quantity was not stated; enter the number of containers in Review Items."] : []),
+      ...(size === null ? ["Package size was not stated; enter the amount per container in Review Items."] : []),
+      ...(state === "Unknown" ? ["Physical state was not stated and could not be confirmed from the chemical database."] : []),
+    ];
+    return { items: [item], warnings };
+  }
+}
+
+function extractVoiceFields(transcript: string) {
+  const text = transcript.replace(/\s+/g, " ").trim();
+  const quantityMatch = text.match(/\b(\d+|one|two|three|four|five|six|seven|eight|nine|ten|a|an)\s+(?:bottles?|containers?|drums?|jars?|vials?)\b/i);
+  const numberWords: Record<string, number> = { one: 1, a: 1, an: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10 };
+  const quantity = quantityMatch ? (Number(quantityMatch[1]) || numberWords[quantityMatch[1].toLowerCase()] || null) : null;
+  const sizeMatch = text.match(/\b(\d+(?:\.\d+)?)\s*(millilit(?:er|re)s?|ml|lit(?:er|re)s?|l|kilograms?|kg|grams?|g)\b/i);
+  const unitText = sizeMatch?.[2].toLowerCase();
+  const unit: Unit | null = !unitText ? null : /^(ml|milliliters?|millilitres?)$/.test(unitText) ? "mL" : /^(l|liters?|litres?)$/.test(unitText) ? "L" : /^(kg|kilograms?)$/.test(unitText) ? "kg" : "g";
+  const stateMatch = text.match(/\b(solid|liquid|gas|powder|crystals?|granules?)\b/i);
+  const state = !stateMatch ? "Unknown" : /liquid/i.test(stateMatch[1]) ? "Liquid" : /gas/i.test(stateMatch[1]) ? "Gas" : "Solid";
+  const withoutDetails = text
+    .replace(quantityMatch?.[0] ?? "\u0000", " ")
+    .replace(sizeMatch?.[0] ?? "\u0000", " ")
+    .replace(stateMatch?.[0] ?? "\u0000", " ")
+    .replace(/\b(chemical|name|quantity|size|state|is|about|of|please|add|this|to|the|drum|container|containers|bottle|bottles|and|at)\b/gi, " ")
+    .replace(/[,:;]+/g, " ").replace(/\s+/g, " ").trim();
+  const name = withoutDetails.length >= 3 ? withoutDetails : "";
+  return { name, quantity, size: sizeMatch ? Number(sizeMatch[1]) : null, unit, state };
 }
 
 type VisionExtract = {

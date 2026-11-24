@@ -1,7 +1,7 @@
 export type Role = "Chemist" | "Supervisor" | "Admin";
 export type Unit = "g" | "kg" | "mL" | "L";
 export type PhysicalState = "Solid" | "Liquid" | "Gas" | "Unknown";
-export type FieldSource = "label" | "database" | "user" | "inferred" | "image";
+export type FieldSource = "label" | "database" | "user" | "inferred" | "image" | "voice";
 export type ItemStatus = "Confirmed" | "Review Required" | "Unknown";
 export type DrumStatus = "Active" | "Completed" | "Blocked";
 export type RetentionPolicy = "Delete after processing" | "Keep until drum completion" | "Keep permanently";

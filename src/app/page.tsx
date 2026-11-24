@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, Archive, Camera, CheckCircle2, ClipboardCheck, Database, FileDown, Filter, History, Home, ImageUp, LogIn, Mail, Plus, Printer, RotateCcw, Search, Settings, ShieldCheck, Trash2, Wifi, WifiOff } from "lucide-react";
+import { AlertTriangle, Archive, Camera, CheckCircle2, ClipboardCheck, Database, FileDown, Filter, History, Home, ImageUp, LogIn, Mail, Mic, Plus, Printer, RotateCcw, Search, Settings, ShieldCheck, Square, Trash2, Wifi, WifiOff } from "lucide-react";
 import { chemicalVisionService } from "@/services/chemicalVision";
 import { demoDrums, demoProducts, field } from "@/lib/demo-data";
 import { completionBlockers, confidenceNeedsReview, mergeDuplicateItems, totalContainers } from "@/lib/inventory";
@@ -254,7 +254,11 @@ function ActiveDrums({ drums, selected, onSelect, onDelete, onUpdate, products, 
 function CameraScanner({ drum, onUpdate, openAiApiKey, correctionStorageKey }: { drum: Drum; onUpdate: (drum: Drum) => void; openAiApiKey: string; correctionStorageKey: string }) {
   const fileRef = useRef<HTMLInputElement>(null);
   const galleryRef = useRef<HTMLInputElement>(null);
+  const audioFileRef = useRef<HTMLInputElement>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
   const [processing, setProcessing] = useState(false);
+  const [recording, setRecording] = useState(false);
   const [scanError, setScanError] = useState("");
   const [openPhoto, setOpenPhoto] = useState<string | null>(null);
   async function processImage(file?: File) {
@@ -277,7 +281,54 @@ function CameraScanner({ drum, onUpdate, openAiApiKey, correctionStorageKey }: {
       setProcessing(false);
     }
   }
-  return <Panel title={`DRUM ${drum.drumId}`}><div className="flex min-h-56 items-center justify-center rounded-lg border-2 border-dashed border-slate-300 bg-slate-50 text-center"><div><Camera className="mx-auto mb-3 text-slate-500" size={44} /><p className="font-semibold">Camera area</p><p className="text-sm text-slate-600">Fill the frame with the label and avoid glare.</p><p className="mt-1 text-xs font-semibold text-slate-500">Automatic quality, label-crop and code checks</p></div></div>{Boolean(drum.scanImages?.length) && <div className="mt-3 grid grid-cols-4 gap-2">{drum.scanImages?.map((image, index) => <button type="button" key={`${drum.scanImageIds?.[index] ?? image.slice(0, 24)}-${index}`} aria-label={`Open scan ${index + 1}`} onClick={() => setOpenPhoto(image)} className="h-20 w-full overflow-hidden rounded-lg border border-slate-200 bg-slate-50"><img src={image} alt={`Chemical label scan ${index + 1}`} className="h-full w-full object-cover" /></button>)}</div>}{openPhoto && <div role="dialog" aria-modal="true" aria-label="Chemical label photo" onClick={() => setOpenPhoto(null)} className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-4"><div className="relative max-h-full max-w-5xl" onClick={(event) => event.stopPropagation()}><img src={openPhoto} alt="Full-size chemical label" className="max-h-[88vh] max-w-full rounded-lg object-contain" /><button type="button" onClick={() => setOpenPhoto(null)} className="touch-button absolute right-2 top-2 bg-white text-slate-950 shadow-lg">Close</button></div></div>}{Boolean(drum.scanWarnings?.length) && <div className="mt-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950">{drum.scanWarnings?.map((warning) => <p key={warning} className="flex gap-2"><AlertTriangle size={16} className="mt-0.5 shrink-0" />{warning}</p>)}</div>}{scanError && <p className="mt-3 rounded-lg border border-red-200 bg-red-50 p-3 text-sm font-semibold text-red-800" role="alert">{scanError}</p>}<div className="mt-4 grid grid-cols-3 gap-2"><MetricMini label="Images" value={drum.imagesScanned} /><MetricMini label="Detected" value={drum.items.length} /><MetricMini label="Review" value={completionBlockers(drum).length} /></div><input ref={fileRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={(e) => void processImage(e.target.files?.[0])} /><input ref={galleryRef} type="file" accept="image/*" className="hidden" onChange={(e) => void processImage(e.target.files?.[0])} /><div className="mt-4 grid gap-3 sm:grid-cols-4"><button type="button" disabled={processing} onClick={() => fileRef.current?.click()} className="touch-button justify-center bg-slate-900 text-white"><Camera size={20} />TAKE PHOTO</button><button type="button" disabled={processing} onClick={() => galleryRef.current?.click()} className="touch-button justify-center border border-slate-300 bg-white"><ImageUp size={20} />UPLOAD IMAGE</button><a href="#review" className="touch-button justify-center border border-slate-300 bg-white"><AlertTriangle size={20} />REVIEW ITEMS</a><a href="#summary" className="touch-button justify-center bg-emerald-700 text-white"><CheckCircle2 size={20} />FINISH SCANNING</a></div>{processing && <p className="mt-3 text-sm font-semibold text-amber-800" aria-live="polite">Checking focus and glare, cropping the label, then reading its English name...</p>}</Panel>;
+  async function processAudio(file?: File) {
+    if (!file || processing) return;
+    setProcessing(true);
+    setScanError("");
+    try {
+      const result = await chemicalVisionService.analyzeChemicalAudio(file, { openAiApiKey: openAiApiKey.trim() || undefined });
+      if (!result.items.length) {
+        setScanError(result.warnings.join(" "));
+        return;
+      }
+      const additions: InventoryItem[] = result.items.map((item) => applyLearnedCorrection({ ...item, id: crypto.randomUUID(), sourceImageIds: [], status: "Review Required" }, correctionStorageKey));
+      onUpdate({ ...drum, scanWarnings: [`Voice transcript: ${result.transcript}`, ...result.warnings], items: mergeDuplicateItems([...drum.items, ...additions]) });
+    } catch (error) {
+      setScanError(error instanceof Error ? error.message : "Audio could not be processed. Check microphone access and try again.");
+    } finally {
+      if (audioFileRef.current) audioFileRef.current.value = "";
+      setProcessing(false);
+    }
+  }
+  async function toggleRecording() {
+    if (recording) {
+      mediaRecorderRef.current?.stop();
+      return;
+    }
+    if (processing) return;
+    setScanError("");
+    try {
+      if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") throw new Error("Audio recording is not supported in this browser. Upload an audio file instead.");
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mimeType = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"].find((type) => MediaRecorder.isTypeSupported(type));
+      const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+      audioChunksRef.current = [];
+      recorder.ondataavailable = (event) => { if (event.data.size) audioChunksRef.current.push(event.data); };
+      recorder.onstop = () => {
+        const blob = new Blob(audioChunksRef.current, { type: recorder.mimeType || "audio/webm" });
+        stream.getTracks().forEach((track) => track.stop());
+        setRecording(false);
+        const extension = blob.type.includes("mp4") ? "m4a" : "webm";
+        void processAudio(new File([blob], `lab-smalls-recording.${extension}`, { type: blob.type }));
+      };
+      mediaRecorderRef.current = recorder;
+      recorder.start();
+      setRecording(true);
+    } catch (error) {
+      setScanError(error instanceof Error ? error.message : "Microphone access was denied.");
+    }
+  }
+  return <Panel title={`DRUM ${drum.drumId}`}><div className="flex min-h-56 items-center justify-center rounded-lg border-2 border-dashed border-slate-300 bg-slate-50 text-center"><div><Camera className="mx-auto mb-3 text-slate-500" size={44} /><p className="font-semibold">Camera area</p><p className="text-sm text-slate-600">Fill the frame with the label and avoid glare.</p><p className="mt-1 text-xs font-semibold text-slate-500">Automatic quality, label-crop and code checks</p></div></div>{Boolean(drum.scanImages?.length) && <div className="mt-3 grid grid-cols-4 gap-2">{drum.scanImages?.map((image, index) => <button type="button" key={`${drum.scanImageIds?.[index] ?? image.slice(0, 24)}-${index}`} aria-label={`Open scan ${index + 1}`} onClick={() => setOpenPhoto(image)} className="h-20 w-full overflow-hidden rounded-lg border border-slate-200 bg-slate-50"><img src={image} alt={`Chemical label scan ${index + 1}`} className="h-full w-full object-cover" /></button>)}</div>}{openPhoto && <div role="dialog" aria-modal="true" aria-label="Chemical label photo" onClick={() => setOpenPhoto(null)} className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-4"><div className="relative max-h-full max-w-5xl" onClick={(event) => event.stopPropagation()}><img src={openPhoto} alt="Full-size chemical label" className="max-h-[88vh] max-w-full rounded-lg object-contain" /><button type="button" onClick={() => setOpenPhoto(null)} className="touch-button absolute right-2 top-2 bg-white text-slate-950 shadow-lg">Close</button></div></div>}{Boolean(drum.scanWarnings?.length) && <div className="mt-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950">{drum.scanWarnings?.map((warning) => <p key={warning} className="flex gap-2"><AlertTriangle size={16} className="mt-0.5 shrink-0" />{warning}</p>)}</div>}{scanError && <p className="mt-3 rounded-lg border border-red-200 bg-red-50 p-3 text-sm font-semibold text-red-800" role="alert">{scanError}</p>}<div className="mt-4 grid grid-cols-3 gap-2"><MetricMini label="Images" value={drum.imagesScanned} /><MetricMini label="Detected" value={drum.items.length} /><MetricMini label="Review" value={completionBlockers(drum).length} /></div><input ref={fileRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={(e) => void processImage(e.target.files?.[0])} /><input ref={galleryRef} type="file" accept="image/*" className="hidden" onChange={(e) => void processImage(e.target.files?.[0])} /><input ref={audioFileRef} type="file" accept="audio/*,.webm,.m4a,.mp3,.wav,.ogg" className="hidden" onChange={(e) => void processAudio(e.target.files?.[0])} /><div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-3"><button type="button" disabled={processing || recording} onClick={() => fileRef.current?.click()} className="touch-button justify-center bg-slate-900 text-white"><Camera size={20} />TAKE PHOTO</button><button type="button" disabled={processing || recording} onClick={() => galleryRef.current?.click()} className="touch-button justify-center border border-slate-300 bg-white"><ImageUp size={20} />UPLOAD IMAGE</button><button type="button" disabled={processing} onClick={() => void toggleRecording()} className={`touch-button justify-center ${recording ? "bg-red-700 text-white" : "border border-emerald-300 bg-emerald-50 text-emerald-900"}`}>{recording ? <Square size={18} /> : <Mic size={20} />}{recording ? "STOP & READ VOICE" : "SPEAK / RECORD"}</button><button type="button" disabled={processing || recording} onClick={() => audioFileRef.current?.click()} className="touch-button justify-center border border-slate-300 bg-white"><ImageUp size={20} />UPLOAD AUDIO</button><a href="#review" className="touch-button justify-center border border-slate-300 bg-white"><AlertTriangle size={20} />REVIEW ITEMS</a><a href="#summary" className="touch-button justify-center bg-emerald-700 text-white"><CheckCircle2 size={20} />FINISH SCANNING</a></div>{recording && <p className="mt-3 text-sm font-semibold text-red-800" aria-live="polite">Recording… Say the chemical name, number of containers, size per container and physical state, then press Stop.</p>}{processing && <p className="mt-3 text-sm font-semibold text-amber-800" aria-live="polite">Reading the spoken chemical name and extracting the inventory details…</p>}</Panel>;
 }
 
 async function prepareCameraImage(file: File) {
