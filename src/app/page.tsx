@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, Archive, Camera, CheckCircle2, ClipboardCheck, Database, FileDown, Filter, History, Home, ImageUp, LogIn, Mail, Mic, Plus, Printer, RotateCcw, Search, Settings, ShieldCheck, Square, Trash2, Wifi, WifiOff } from "lucide-react";
+import { AlertTriangle, Archive, Camera, CheckCircle2, ClipboardCheck, Database, FileDown, Filter, History, Home, ImageUp, LogIn, Mail, Mic, Moon, Plus, Printer, RotateCcw, Search, Settings, ShieldCheck, Square, Sun, Trash2, Wifi, WifiOff } from "lucide-react";
 import { chemicalVisionService } from "@/services/chemicalVision";
 import { demoDrums, demoProducts, field } from "@/lib/demo-data";
 import { completionBlockers, confidenceNeedsReview, mergeDuplicateItems, totalContainers } from "@/lib/inventory";
@@ -19,6 +19,7 @@ const states: PhysicalState[] = ["Solid", "Liquid", "Gas", "Unknown"];
 const storageKey = "lab-smalls-scanner-state-v2";
 const salesDemoStorageKey = `${storageKey}-sales-demo`;
 const correctionKey = "lab-smalls-scanner-corrections-v1";
+const themeStorageKey = "lab-smalls-theme-v1";
 
 function localDateString(date = new Date()) {
   const pad = (value: number) => String(value).padStart(2, "0");
@@ -40,6 +41,7 @@ export default function HomePage() {
   const [openAiApiKey, setOpenAiApiKey] = useState("");
   const [demoMode, setDemoMode] = useState(false);
   const [online, setOnline] = useState(true);
+  const [darkTheme, setDarkTheme] = useState(true);
   const [hydrated, setHydrated] = useState(false);
   const selectedDrum = drums.find((drum) => drum.id === selectedDrumId);
   const activeDrums = drums.filter((drum) => drum.status !== "Completed");
@@ -100,6 +102,13 @@ export default function HomePage() {
     });
     if (view === "Active Drums" && selectedDrumId === id) setView("Dashboard");
   };
+
+  useEffect(() => {
+    const savedTheme = localStorage.getItem(themeStorageKey);
+    const useDarkTheme = savedTheme !== "light";
+    setDarkTheme(useDarkTheme);
+    document.documentElement.dataset.theme = useDarkTheme ? "dark" : "light";
+  }, []);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -183,6 +192,7 @@ export default function HomePage() {
           <div className="flex h-11 w-11 items-center justify-center rounded-lg bg-emerald-700 text-white"><ClipboardCheck size={24} /></div>
           <div className="min-w-0 flex-1"><h1 className="truncate text-xl font-bold tracking-tight">Lab Smalls Scanner</h1><p className="text-sm text-slate-600">AI-assisted extraction. Operator verification required.</p></div>
           {!demoMode && <button onClick={openSalesDemo} className="touch-button min-h-10 shrink-0 border border-emerald-300 bg-white px-3 text-sm font-bold text-emerald-800">Sales demo</button>}
+          <button type="button" onClick={() => setDarkTheme((current) => { const next = !current; document.documentElement.dataset.theme = next ? "dark" : "light"; try { localStorage.setItem(themeStorageKey, next ? "dark" : "light"); } catch { /* Theme still applies for this session. */ } return next; })} className="touch-button min-h-10 shrink-0 border border-slate-300 bg-white px-3 text-sm font-semibold" aria-label={`Switch to ${darkTheme ? "light" : "dark"} theme`} title={`Switch to ${darkTheme ? "light" : "dark"} theme`}>{darkTheme ? <Sun size={18} /> : <Moon size={18} />}<span className="hidden sm:inline">{darkTheme ? "Light" : "Dark"}</span></button>
           <button onClick={() => setOnline((value) => !value)} className="touch-button hidden border border-slate-300 bg-white text-sm font-semibold sm:flex">{online ? <Wifi size={18} /> : <WifiOff size={18} />}{online ? "ONLINE" : "OFFLINE"}</button>
         </div>
       </header>
