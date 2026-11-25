@@ -1,13 +1,14 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, Archive, BookOpen, Camera, CheckCircle2, ClipboardCheck, Copyright, Database, FileDown, Filter, History, Home, ImageUp, LockKeyhole, Mail, Mic, Moon, Plus, Printer, RotateCcw, Search, Settings, Shield, ShieldCheck, Square, Sun, Trash2 } from "lucide-react";
+import { AlertTriangle, Archive, BookOpen, Camera, CheckCircle2, ClipboardCheck, Copyright, Database, FileDown, Filter, History, Home, ImageUp, LockKeyhole, Mail, Mic, Palette, Plus, Printer, RotateCcw, Search, Settings, Shield, ShieldCheck, Square, Trash2 } from "lucide-react";
 import { chemicalVisionService } from "@/services/chemicalVision";
 import { completionBlockers, confidenceNeedsReview, mergeDuplicateItems, totalContainers } from "@/lib/inventory";
 import { createInventoryPdf, downloadCsv, downloadPdf, downloadXlsx, openPrintView } from "@/lib/exporters";
 import type { Drum, InventoryItem, OcrCategories, PhysicalState, Product, RetentionPolicy, Unit } from "@/types/lab-smalls";
 
 type View = "Dashboard" | "New Drum" | "Active Drums" | "History" | "PubChem Database" | "Settings" | "How to Use" | "Legal & Privacy";
+type Theme = "dark" | "light" | "ocean" | "forest" | "amethyst";
 type SavedAppState = { drums?: Drum[]; products?: Product[]; retention?: RetentionPolicy; selectedDrumId?: string; openAiApiKey?: string };
 const navItems: { label: View; icon: typeof Home }[] = [
   { label: "Dashboard", icon: Home }, { label: "New Drum", icon: Plus }, { label: "Active Drums", icon: Archive },
@@ -18,6 +19,11 @@ const states: PhysicalState[] = ["Solid", "Liquid", "Gas", "Unknown"];
 const storageKey = "lab-smalls-scanner-state-v2";
 const correctionKey = "lab-smalls-scanner-corrections-v1";
 const themeStorageKey = "lab-smalls-theme-v1";
+const themes: { value: Theme; label: string }[] = [
+  { value: "dark", label: "Dark" }, { value: "light", label: "Light" }, { value: "ocean", label: "Ocean" },
+  { value: "forest", label: "Forest" }, { value: "amethyst", label: "Amethyst" },
+];
+const themeColors: Record<Theme, string> = { dark: "#0b1220", light: "#f1f5f9", ocean: "#071a27", forest: "#0d1c16", amethyst: "#191323" };
 const field = <T,>(value: T | null, confidence: number, source: InventoryItem["chemicalName"]["source"]) => ({ value, confidence, source });
 
 function localDateString(date = new Date()) {
@@ -32,7 +38,7 @@ export default function HomePage() {
   const [products, setProducts] = useState<Product[]>([]);
   const [retention, setRetention] = useState<RetentionPolicy>("Keep until drum completion");
   const [openAiApiKey, setOpenAiApiKey] = useState("");
-  const [darkTheme, setDarkTheme] = useState(true);
+  const [theme, setTheme] = useState<Theme>("dark");
   const [hydrated, setHydrated] = useState(false);
   const selectedDrum = drums.find((drum) => drum.id === selectedDrumId);
   const activeDrums = drums.filter((drum) => drum.status !== "Completed");
@@ -52,11 +58,19 @@ export default function HomePage() {
   };
 
   useEffect(() => {
-    const savedTheme = localStorage.getItem(themeStorageKey);
-    const useDarkTheme = savedTheme !== "light";
-    setDarkTheme(useDarkTheme);
-    document.documentElement.dataset.theme = useDarkTheme ? "dark" : "light";
+    const savedTheme = localStorage.getItem(themeStorageKey) as Theme | null;
+    const selectedTheme = themes.some((option) => option.value === savedTheme) ? savedTheme as Theme : "dark";
+    setTheme(selectedTheme);
+    document.documentElement.dataset.theme = selectedTheme;
+    document.querySelector('meta[name="theme-color"]')?.setAttribute("content", themeColors[selectedTheme]);
   }, []);
+
+  const changeTheme = (nextTheme: Theme) => {
+    setTheme(nextTheme);
+    document.documentElement.dataset.theme = nextTheme;
+    document.querySelector('meta[name="theme-color"]')?.setAttribute("content", themeColors[nextTheme]);
+    try { localStorage.setItem(themeStorageKey, nextTheme); } catch { /* The theme remains active for this session. */ }
+  };
 
   useEffect(() => {
     localStorage.removeItem(`${storageKey}-sales-demo`);
@@ -120,7 +134,7 @@ export default function HomePage() {
         <div className="mx-auto flex max-w-7xl items-center gap-3 px-4 py-3">
           <div className="flex h-11 w-11 items-center justify-center rounded-lg bg-emerald-700 text-white"><ClipboardCheck size={24} /></div>
           <div className="min-w-0 flex-1"><h1 className="truncate text-xl font-bold tracking-tight">Lab Smalls Scanner</h1><p className="text-sm text-slate-600">Lab Chemicals Inventory Management</p></div>
-          <button type="button" onClick={() => setDarkTheme((current) => { const next = !current; document.documentElement.dataset.theme = next ? "dark" : "light"; try { localStorage.setItem(themeStorageKey, next ? "dark" : "light"); } catch { /* Theme still applies for this session. */ } return next; })} className="touch-button min-h-10 shrink-0 border border-slate-300 bg-white px-3 text-sm font-semibold" aria-label={`Switch to ${darkTheme ? "light" : "dark"} theme`} title={`Switch to ${darkTheme ? "light" : "dark"} theme`}>{darkTheme ? <Sun size={18} /> : <Moon size={18} />}<span className="hidden sm:inline">{darkTheme ? "Light" : "Dark"}</span></button>
+          <label className="sr-only" htmlFor="color-theme">Color theme</label><div className="flex shrink-0 items-center gap-1.5"><Palette size={17} className="hidden text-slate-500 sm:block" /><select id="color-theme" value={theme} onChange={(event) => changeTheme(event.target.value as Theme)} className="input theme-select" aria-label="Color theme" title="Color theme">{themes.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></div>
         </div>
       </header>
       <div className="mx-auto grid max-w-7xl gap-4 px-4 py-4 lg:grid-cols-[260px_1fr]">
