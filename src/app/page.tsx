@@ -1,14 +1,14 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, Archive, Camera, CheckCircle2, ClipboardCheck, Database, FileDown, Filter, History, Home, ImageUp, LogIn, Mail, Mic, Moon, Plus, Printer, RotateCcw, Search, Settings, ShieldCheck, Square, Sun, Trash2, Wifi, WifiOff } from "lucide-react";
+import { AlertTriangle, Archive, BookOpen, Camera, CheckCircle2, ClipboardCheck, Copyright, Database, FileDown, Filter, History, Home, ImageUp, LogIn, LockKeyhole, Mail, Mic, Moon, Plus, Printer, RotateCcw, Search, Settings, Shield, ShieldCheck, Square, Sun, Trash2, Wifi, WifiOff } from "lucide-react";
 import { chemicalVisionService } from "@/services/chemicalVision";
 import { demoDrums, demoProducts, field } from "@/lib/demo-data";
 import { completionBlockers, confidenceNeedsReview, mergeDuplicateItems, totalContainers } from "@/lib/inventory";
 import { createInventoryPdf, downloadCsv, downloadPdf, downloadXlsx, openPrintView } from "@/lib/exporters";
 import type { Drum, InventoryItem, OcrCategories, PhysicalState, Product, RetentionPolicy, Role, Unit } from "@/types/lab-smalls";
 
-type View = "Dashboard" | "New Drum" | "Active Drums" | "History" | "PubChem Database" | "Settings";
+type View = "Dashboard" | "New Drum" | "Active Drums" | "History" | "PubChem Database" | "Settings" | "How to Use" | "Legal & Privacy";
 type SavedAppState = { drums?: Drum[]; products?: Product[]; retention?: RetentionPolicy; selectedDrumId?: string; openAiApiKey?: string };
 const navItems: { label: View; icon: typeof Home }[] = [
   { label: "Dashboard", icon: Home }, { label: "New Drum", icon: Plus }, { label: "Active Drums", icon: Archive },
@@ -190,7 +190,7 @@ export default function HomePage() {
       <header className="app-header sticky top-0 z-30 border-b border-slate-200 bg-white/95 backdrop-blur">
         <div className="mx-auto flex max-w-7xl items-center gap-3 px-4 py-3">
           <div className="flex h-11 w-11 items-center justify-center rounded-lg bg-emerald-700 text-white"><ClipboardCheck size={24} /></div>
-          <div className="min-w-0 flex-1"><h1 className="truncate text-xl font-bold tracking-tight">Lab Smalls Scanner</h1><p className="text-sm text-slate-600">AI-assisted extraction. Operator verification required.</p></div>
+          <div className="min-w-0 flex-1"><h1 className="truncate text-xl font-bold tracking-tight">Lab Smalls Scanner</h1><p className="text-sm text-slate-600">Laboratory inventory management</p></div>
           {!demoMode && <button onClick={openSalesDemo} className="touch-button min-h-10 shrink-0 border border-emerald-300 bg-white px-3 text-sm font-bold text-emerald-800">Sales demo</button>}
           <button type="button" onClick={() => setDarkTheme((current) => { const next = !current; document.documentElement.dataset.theme = next ? "dark" : "light"; try { localStorage.setItem(themeStorageKey, next ? "dark" : "light"); } catch { /* Theme still applies for this session. */ } return next; })} className="touch-button min-h-10 shrink-0 border border-slate-300 bg-white px-3 text-sm font-semibold" aria-label={`Switch to ${darkTheme ? "light" : "dark"} theme`} title={`Switch to ${darkTheme ? "light" : "dark"} theme`}>{darkTheme ? <Sun size={18} /> : <Moon size={18} />}<span className="hidden sm:inline">{darkTheme ? "Light" : "Dark"}</span></button>
           <button onClick={() => setOnline((value) => !value)} className="touch-button hidden border border-slate-300 bg-white text-sm font-semibold sm:flex">{online ? <Wifi size={18} /> : <WifiOff size={18} />}{online ? "ONLINE" : "OFFLINE"}</button>
@@ -201,6 +201,7 @@ export default function HomePage() {
         <aside className="hidden rounded-lg border border-slate-200 bg-white p-3 lg:block">
           <DemoLogin role={role} setRole={setRole} />
           <nav className="mt-4 space-y-2">{navItems.map((item) => <NavButton key={item.label} item={item} active={view === item.label} onClick={() => setView(item.label)} />)}</nav>
+          <div className="mt-6 border-t border-slate-200 pt-4"><p className="mb-2 px-2 text-xs font-bold uppercase tracking-wider text-slate-500">Resources</p><div className="space-y-2"><NavButton item={{ label: "How to Use", icon: BookOpen }} active={view === "How to Use"} onClick={() => setView("How to Use")} /><NavButton item={{ label: "Legal & Privacy", icon: Shield }} active={view === "Legal & Privacy"} onClick={() => setView("Legal & Privacy")} /></div></div>
         </aside>
         <section className="mobile-page-content min-w-0 space-y-4 lg:pb-4">
           <OfflineStatus online={online} pending={!online && activeDrums.length > 0} />
@@ -210,6 +211,9 @@ export default function HomePage() {
           {view === "History" && <HistoryView drums={completedDrums.length ? completedDrums : drums} onDelete={deleteDrum} onOpen={(id) => { setSelectedDrumId(id); setView("Active Drums"); }} />}
           {view === "PubChem Database" && <ProductDatabase products={products} />}
           {view === "Settings" && <SettingsView retention={retention} setRetention={setRetention} role={role} openAiApiKey={openAiApiKey} setOpenAiApiKey={setOpenAiApiKey} resetDemo={() => { localStorage.removeItem(demoMode ? salesDemoStorageKey : storageKey); localStorage.removeItem(activeCorrectionKey); setDrums([]); setProducts([]); setOpenAiApiKey(""); setSelectedDrumId(""); }} />}
+          {view === "How to Use" && <HowToUsePage onNavigate={setView} />}
+          {view === "Legal & Privacy" && <LegalPrivacyPage />}
+          <AppFooter onNavigate={setView} />
         </section>
       </div>
       <nav className="mobile-bottom-nav fixed inset-x-0 bottom-0 z-40 grid grid-cols-5 border-t border-slate-200 bg-white lg:hidden">
@@ -812,6 +816,45 @@ function HistoryView({ drums, onOpen, onDelete }: { drums: Drum[]; onOpen: (id: 
 function ProductDatabase({ products }: { products: Product[] }) {
   return <Panel title="Chemical Databases"><div className="grid gap-3 md:grid-cols-3"><div className="rounded-lg border border-emerald-200 bg-emerald-50 p-4"><Database className="mb-3 text-emerald-800" size={28} /><h3 className="font-bold text-emerald-950">Verified identity lookup</h3><p className="mt-2 text-sm text-emerald-900">OCR results are checked in order: Sigma-Aldrich first, Merck second, then PubChem. Catalogue codes are used whenever they are visible.</p></div><div className="rounded-lg border border-slate-200 bg-white p-4"><ClipboardCheck className="mb-3 text-slate-700" size={28} /><h3 className="font-bold">Only required inventory fields</h3><p className="mt-2 text-sm text-slate-600">Database results improve the chemical name and physical state. The inventory keeps name, quantity, container size, concentration, unit and physical state.</p></div><div className="rounded-lg border border-amber-200 bg-amber-50 p-4"><AlertTriangle className="mb-3 text-amber-800" size={28} /><h3 className="font-bold text-amber-950">Closest OCR fallback</h3><p className="mt-2 text-sm text-amber-900">If no trusted database confirms the candidate, the strongest OCR name and the label size are still added as Review Required.</p></div></div><section className="mt-5"><h3 className="mb-3 text-base font-bold">Local fallback products</h3><div className="grid gap-3">{products.length === 0 && <p className="rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm font-semibold text-slate-600">No local fallback products are saved in this browser.</p>}{products.map((product) => <div key={product.id} className="rounded-lg border border-slate-200 bg-white p-4"><strong>{product.canonicalName}</strong><p className="mt-1 text-sm text-slate-600">{product.typicalContainerSize ?? "-"} {product.unit ?? ""} · {product.typicalConcentration ? `${product.typicalConcentration} · ` : ""}{product.physicalState}</p></div>)}</div></section></Panel>;
 }
+
+function HowToUsePage({ onNavigate }: { onNavigate: (view: View) => void }) {
+  const steps = [
+    { number: "01", title: "Create a drum", text: "Choose New Drum, confirm the drum ID and size, add the operator and date, then start scanning." },
+    { number: "02", title: "Capture a label", text: "Take a clear photo or upload one. You can also describe the chemical by voice or enter a transcript. Keep the full product name in frame and reduce glare." },
+    { number: "03", title: "Review every field", text: "Check the chemical name against the physical label. Confirm quantity, container size, unit, concentration and physical state; correct anything uncertain before confirmation." },
+    { number: "04", title: "Finalise and export", text: "Use Summary to check the drum, resolve review blockers, confirm the inventory, then create an export for your records." },
+  ];
+  return <div className="space-y-4">
+    <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+      <div className="bg-slate-900 px-5 py-6 text-white sm:px-8 sm:py-8"><div className="mb-3 flex h-11 w-11 items-center justify-center rounded-xl bg-emerald-600"><BookOpen size={23} /></div><p className="text-sm font-bold uppercase tracking-[0.16em] text-emerald-300">Product guide</p><h2 className="mt-2 text-2xl font-bold sm:text-3xl">How to use Lab Smalls Scanner</h2><p className="mt-2 max-w-2xl text-sm leading-6 text-slate-300">A simple workflow for capturing, checking and exporting laboratory smalls inventory.</p></div>
+      <div className="grid gap-3 p-4 sm:grid-cols-2 sm:p-6">{steps.map((step) => <article key={step.number} className="rounded-xl border border-slate-200 bg-slate-50 p-4 sm:p-5"><span className="text-sm font-extrabold tracking-widest text-emerald-700">{step.number}</span><h3 className="mt-2 font-bold">{step.title}</h3><p className="mt-2 text-sm leading-6 text-slate-600">{step.text}</p></article>)}</div>
+    </section>
+    <section className="grid gap-4 md:grid-cols-2">
+      <article className="rounded-xl border border-emerald-200 bg-emerald-50 p-5"><div className="flex items-center gap-2 font-bold text-emerald-950"><ShieldCheck size={20} />Verification matters</div><p className="mt-2 text-sm leading-6 text-emerald-900">Image and speech recognition can make mistakes. Always compare extracted details with the container label and your site procedure before confirming or using an export.</p></article>
+      <article className="rounded-xl border border-slate-200 bg-white p-5"><div className="flex items-center gap-2 font-bold"><LockKeyhole size={20} />Your browser’s data</div><p className="mt-2 text-sm leading-6 text-slate-600">Inventory and settings are saved in the current browser on this device. They are not automatically shared with another phone or computer. See Legal &amp; Privacy for image and service details.</p></article>
+    </section>
+    <div className="flex flex-wrap gap-3"><button type="button" onClick={() => onNavigate("New Drum")} className="touch-button justify-center bg-emerald-700 text-white"><Plus size={18} />START A DRUM</button><button type="button" onClick={() => onNavigate("Settings")} className="touch-button justify-center border border-slate-300 bg-white"><Settings size={18} />OPEN SETTINGS</button></div>
+  </div>;
+}
+
+function LegalPrivacyPage() {
+  return <div className="space-y-4">
+    <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-7"><div className="flex items-start gap-4"><div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-slate-900 text-white"><Shield size={24} /></div><div><p className="text-sm font-bold uppercase tracking-[0.16em] text-emerald-700">Trust &amp; transparency</p><h2 className="mt-1 text-2xl font-bold">Legal &amp; Privacy</h2><p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">Important information about ownership, data handling and appropriate use of this application.</p></div></div></section>
+    <section className="grid gap-4 md:grid-cols-2">
+      <article className="rounded-xl border border-slate-200 bg-white p-5"><h3 className="flex items-center gap-2 font-bold"><Copyright size={19} />Copyright &amp; trademarks</h3><p className="mt-3 text-sm leading-6 text-slate-600">© 2026 Lab Smalls Scanner. All rights reserved. The application’s original interface, code and documentation are protected by applicable intellectual property laws. Product names, logos and marks referenced in the application belong to their respective owners. Mention of third-party names does not imply endorsement or partnership.</p></article>
+      <article className="rounded-xl border border-slate-200 bg-white p-5"><h3 className="flex items-center gap-2 font-bold"><LockKeyhole size={19} />Data &amp; privacy</h3><ul className="mt-3 list-disc space-y-2 pl-5 text-sm leading-6 text-slate-600"><li>Inventory, preferences and any saved API key are stored in this browser on this device. Clearing browser data or changing devices may remove or leave that information behind.</li><li>When an OpenAI key is configured and AI recognition is used, the relevant image or audio is sent to OpenAI to process the request. The key is kept in this browser; review the provider’s current terms and privacy information before use.</li><li>Do not upload personal, confidential or customer information unless you are authorised and your organisation has approved the relevant services and retention settings.</li></ul></article>
+      <article className="rounded-xl border border-amber-200 bg-amber-50 p-5"><h3 className="flex items-center gap-2 font-bold text-amber-950"><AlertTriangle size={19} />Safety &amp; intended use</h3><p className="mt-3 text-sm leading-6 text-amber-900">This application supports inventory capture. It is not a substitute for container labels, safety data sheets (SDS), trained professional judgement, site procedures or applicable laws. Recognition output may be incomplete or incorrect. Verify every chemical identity and field at the source before making handling, storage, transport or disposal decisions.</p></article>
+      <article className="rounded-xl border border-slate-200 bg-white p-5"><h3 className="flex items-center gap-2 font-bold"><FileDown size={19} />Availability &amp; exports</h3><p className="mt-3 text-sm leading-6 text-slate-600">Exports reflect the information entered and confirmed by the user. The application does not certify regulatory compliance, create an official hazardous-waste manifest or guarantee uninterrupted availability. Keep any records required by your organisation in its approved systems.</p></article>
+    </section>
+    <p className="px-1 text-xs leading-5 text-slate-500">This information describes the current browser-based application and is not legal advice. Organisations evaluating a deployment should review their own security, privacy, retention and compliance requirements.</p>
+  </div>;
+}
+
+function AppFooter({ onNavigate }: { onNavigate: (view: View) => void }) {
+  const navigate = (view: View) => { onNavigate(view); window.scrollTo({ top: 0, behavior: "smooth" }); };
+  return <footer className="border-t border-slate-200 pt-4 text-xs text-slate-500"><div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"><p>Lab Smalls Scanner <span aria-hidden="true">·</span> Laboratory inventory management</p><nav aria-label="Help and legal links" className="flex flex-wrap gap-x-5 gap-y-2"><button type="button" onClick={() => navigate("How to Use")} className="font-semibold hover:text-emerald-700">How to use</button><button type="button" onClick={() => navigate("Legal & Privacy")} className="font-semibold hover:text-emerald-700">Copyright &amp; privacy</button></nav></div><p className="mt-2">© 2026 Lab Smalls Scanner</p></footer>;
+}
+
 function SettingsView({ retention, setRetention, role, openAiApiKey, setOpenAiApiKey, resetDemo }: { retention: RetentionPolicy; setRetention: (value: RetentionPolicy) => void; role: Role; openAiApiKey: string; setOpenAiApiKey: (value: string) => void; resetDemo: () => void }) {
   return <Panel title="Settings"><div className="grid gap-4"><Label text="Image retention"><select className="input" value={retention} onChange={(e) => setRetention(e.target.value as RetentionPolicy)}><option>Delete after processing</option><option>Keep until drum completion</option><option>Keep permanently</option></select></Label><Label text="OpenAI Vision API key"><input className="input" type="password" placeholder="sk-..." value={openAiApiKey} onChange={(e) => setOpenAiApiKey(e.target.value)} autoComplete="off" /></Label><p className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">OCR uses GPT-5.4 with the original photo and a focused label crop; uncertain names get a second independent read, which may add API usage. Tesseract is the fallback. The API key remains in this browser.</p><p className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">Current policy: {retention}. Drum, image preview, product, OCR, and setting changes are saved only in this browser. Other phones or PCs start with their own separate local inventory.</p><button onClick={resetDemo} className="touch-button justify-center border border-slate-300 bg-white"><RotateCcw size={20} />Clear this device</button><div className="rounded-lg border border-slate-200 p-3"><strong>Role permissions</strong><p className="text-sm text-slate-600">{role}: {role === "Chemist" ? "Create, scan, edit active drums, complete drums, view history." : role === "Supervisor" ? "Chemist permissions plus review all drums." : "Full access including users, products, and settings."}</p></div></div></Panel>;
 }
