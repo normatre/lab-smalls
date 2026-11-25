@@ -1,12 +1,11 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, Archive, BookOpen, Camera, CheckCircle2, ClipboardCheck, Copyright, Database, FileDown, Filter, History, Home, ImageUp, LogIn, LockKeyhole, Mail, Mic, Moon, Plus, Printer, RotateCcw, Search, Settings, Shield, ShieldCheck, Square, Sun, Trash2, Wifi, WifiOff } from "lucide-react";
+import { AlertTriangle, Archive, BookOpen, Camera, CheckCircle2, ClipboardCheck, Copyright, Database, FileDown, Filter, History, Home, ImageUp, LockKeyhole, Mail, Mic, Moon, Plus, Printer, RotateCcw, Search, Settings, Shield, ShieldCheck, Square, Sun, Trash2 } from "lucide-react";
 import { chemicalVisionService } from "@/services/chemicalVision";
-import { demoDrums, demoProducts, field } from "@/lib/demo-data";
 import { completionBlockers, confidenceNeedsReview, mergeDuplicateItems, totalContainers } from "@/lib/inventory";
 import { createInventoryPdf, downloadCsv, downloadPdf, downloadXlsx, openPrintView } from "@/lib/exporters";
-import type { Drum, InventoryItem, OcrCategories, PhysicalState, Product, RetentionPolicy, Role, Unit } from "@/types/lab-smalls";
+import type { Drum, InventoryItem, OcrCategories, PhysicalState, Product, RetentionPolicy, Unit } from "@/types/lab-smalls";
 
 type View = "Dashboard" | "New Drum" | "Active Drums" | "History" | "PubChem Database" | "Settings" | "How to Use" | "Legal & Privacy";
 type SavedAppState = { drums?: Drum[]; products?: Product[]; retention?: RetentionPolicy; selectedDrumId?: string; openAiApiKey?: string };
@@ -17,78 +16,27 @@ const navItems: { label: View; icon: typeof Home }[] = [
 const units: Unit[] = ["g", "kg", "mL", "L"];
 const states: PhysicalState[] = ["Solid", "Liquid", "Gas", "Unknown"];
 const storageKey = "lab-smalls-scanner-state-v2";
-const salesDemoStorageKey = `${storageKey}-sales-demo`;
 const correctionKey = "lab-smalls-scanner-corrections-v1";
 const themeStorageKey = "lab-smalls-theme-v1";
+const field = <T,>(value: T | null, confidence: number, source: InventoryItem["chemicalName"]["source"]) => ({ value, confidence, source });
 
 function localDateString(date = new Date()) {
   const pad = (value: number) => String(value).padStart(2, "0");
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 }
 
-function seededSalesDrums() {
-  const today = localDateString();
-  return demoDrums.map((drum) => ({ ...drum, date: today, ...(drum.status === "Completed" ? { finalisedAt: `${today}T12:00:00.000Z` } : {}) }));
-}
-
 export default function HomePage() {
   const [view, setView] = useState<View>("Dashboard");
-  const [role, setRole] = useState<Role>("Chemist");
   const [drums, setDrums] = useState<Drum[]>([]);
   const [selectedDrumId, setSelectedDrumId] = useState("");
   const [products, setProducts] = useState<Product[]>([]);
   const [retention, setRetention] = useState<RetentionPolicy>("Keep until drum completion");
   const [openAiApiKey, setOpenAiApiKey] = useState("");
-  const [demoMode, setDemoMode] = useState(false);
-  const [online, setOnline] = useState(true);
   const [darkTheme, setDarkTheme] = useState(true);
   const [hydrated, setHydrated] = useState(false);
   const selectedDrum = drums.find((drum) => drum.id === selectedDrumId);
   const activeDrums = drums.filter((drum) => drum.status !== "Completed");
   const completedDrums = drums.filter((drum) => drum.status === "Completed");
-  const activeCorrectionKey = demoMode ? `${correctionKey}-sales-demo` : correctionKey;
-  const openSalesDemo = () => {
-    const seededDrums = seededSalesDrums();
-    window.history.replaceState(null, "", `${window.location.pathname}?demo=1`);
-    setDemoMode(true);
-    setDrums(seededDrums.map(stripUnneededDrumFields));
-    setProducts(demoProducts);
-    setOpenAiApiKey("");
-    setRetention("Keep until drum completion");
-    setRole("Chemist");
-    setSelectedDrumId(seededDrums[0]?.id ?? "");
-    setView("Dashboard");
-    setHydrated(true);
-  };
-  const resetSalesDemo = () => {
-    const seededDrums = seededSalesDrums();
-    localStorage.removeItem(salesDemoStorageKey);
-    localStorage.removeItem(`${correctionKey}-sales-demo`);
-    setDrums(seededDrums.map(stripUnneededDrumFields));
-    setProducts(demoProducts);
-    setRetention("Keep until drum completion");
-    setOpenAiApiKey("");
-    setRole("Chemist");
-    setSelectedDrumId(seededDrums[0]?.id ?? "");
-    setView("Dashboard");
-  };
-  const exitSalesDemo = () => {
-    let saved: SavedAppState | null = null;
-    try {
-      const stored = localStorage.getItem(storageKey);
-      saved = stored ? JSON.parse(stored) as SavedAppState : null;
-    } catch {
-      localStorage.removeItem(storageKey);
-    }
-    window.history.replaceState(null, "", window.location.pathname);
-    setDemoMode(false);
-    setDrums(saved?.drums?.map(stripUnneededDrumFields) ?? []);
-    setProducts(saved?.products?.map(stripUnneededProductFields) ?? []);
-    setRetention(saved?.retention ?? "Keep until drum completion");
-    setOpenAiApiKey(saved?.openAiApiKey ?? "");
-    setSelectedDrumId(saved?.selectedDrumId ?? "");
-    setView("Dashboard");
-  };
   const updateDrum = (updated: Drum) => { setDrums((current) => current.map((drum) => drum.id === updated.id ? updated : drum)); setSelectedDrumId(updated.id); };
   const deleteDrum = (id: string) => {
     const target = drums.find((drum) => drum.id === id);
@@ -111,36 +59,18 @@ export default function HomePage() {
   }, []);
 
   useEffect(() => {
+    localStorage.removeItem(`${storageKey}-sales-demo`);
+    localStorage.removeItem(`${correctionKey}-sales-demo`);
     const params = new URLSearchParams(window.location.search);
-    if (params.get("demo") === "1") {
-      const resetSalesDemo = params.get("reset") === "1";
-      if (resetSalesDemo) localStorage.removeItem(salesDemoStorageKey);
-      const storedDemo = resetSalesDemo ? null : localStorage.getItem(salesDemoStorageKey);
-      let parsedDemo: SavedAppState | null = null;
-      try {
-        parsedDemo = storedDemo ? JSON.parse(storedDemo) as SavedAppState : null;
-      } catch {
-        localStorage.removeItem(salesDemoStorageKey);
+    let removedLegacyDemoParams = false;
+    for (const parameter of ["demo", "reset"]) {
+      if (params.has(parameter)) {
+        params.delete(parameter);
+        removedLegacyDemoParams = true;
       }
-      window.setTimeout(() => {
-        setDemoMode(true);
-        if (parsedDemo?.drums?.length) {
-          setDrums(parsedDemo.drums.map(stripUnneededDrumFields));
-          setSelectedDrumId(parsedDemo.selectedDrumId ?? parsedDemo.drums[0].id);
-          setProducts(parsedDemo.products?.map(stripUnneededProductFields) ?? demoProducts);
-          if (parsedDemo.retention) setRetention(parsedDemo.retention);
-          if (parsedDemo.openAiApiKey) setOpenAiApiKey(parsedDemo.openAiApiKey);
-        } else {
-          const seededDrums = seededSalesDrums();
-          setDrums(seededDrums.map(stripUnneededDrumFields));
-          setProducts(demoProducts);
-          setSelectedDrumId(seededDrums[0]?.id ?? "");
-        }
-        setHydrated(true);
-      }, 0);
-      if (resetSalesDemo) window.history.replaceState(null, "", `${window.location.pathname}?demo=1`);
-      return;
     }
+    const remainingQuery = params.toString();
+    if (removedLegacyDemoParams) window.history.replaceState(null, "", `${window.location.pathname}${remainingQuery ? `?${remainingQuery}` : ""}${window.location.hash}`);
     const stored = localStorage.getItem(storageKey);
     if (stored) {
       try {
@@ -162,21 +92,20 @@ export default function HomePage() {
 
   useEffect(() => {
     if (!hydrated) return;
-    const activeStorageKey = demoMode ? salesDemoStorageKey : storageKey;
     try {
-      localStorage.setItem(activeStorageKey, JSON.stringify({ drums, products, retention, selectedDrumId, openAiApiKey }));
+      localStorage.setItem(storageKey, JSON.stringify({ drums, products, retention, selectedDrumId, openAiApiKey }));
     } catch {
       // Mobile browsers have a small storage quota. Keep the inventory even if
       // older image previews no longer fit instead of crashing the page.
       const drumsWithoutImages = drums.map((drum) => ({ ...drum, scanImages: [] }));
       try {
-        localStorage.setItem(activeStorageKey, JSON.stringify({ drums: drumsWithoutImages, products, retention, selectedDrumId, openAiApiKey }));
+        localStorage.setItem(storageKey, JSON.stringify({ drums: drumsWithoutImages, products, retention, selectedDrumId, openAiApiKey }));
       } catch {
         // Storage can also be unavailable in private browsing. The in-memory
         // inventory remains usable for the current session.
       }
     }
-  }, [demoMode, drums, hydrated, openAiApiKey, products, retention, selectedDrumId]);
+  }, [drums, hydrated, openAiApiKey, products, retention, selectedDrumId]);
 
   function createDrum(form: Omit<Drum, "id" | "status" | "imagesScanned" | "items">) {
     const drum: Drum = { ...form, id: crypto.randomUUID(), status: "Active", imagesScanned: 0, scanImages: [], scanImageIds: [], scanWarnings: [], items: [] };
@@ -191,26 +120,21 @@ export default function HomePage() {
         <div className="mx-auto flex max-w-7xl items-center gap-3 px-4 py-3">
           <div className="flex h-11 w-11 items-center justify-center rounded-lg bg-emerald-700 text-white"><ClipboardCheck size={24} /></div>
           <div className="min-w-0 flex-1"><h1 className="truncate text-xl font-bold tracking-tight">Lab Smalls Scanner</h1><p className="text-sm text-slate-600">Lab Chemicals Inventory Management</p></div>
-          {!demoMode && <button onClick={openSalesDemo} className="touch-button min-h-10 shrink-0 border border-emerald-300 bg-white px-3 text-sm font-bold text-emerald-800">Sales demo</button>}
           <button type="button" onClick={() => setDarkTheme((current) => { const next = !current; document.documentElement.dataset.theme = next ? "dark" : "light"; try { localStorage.setItem(themeStorageKey, next ? "dark" : "light"); } catch { /* Theme still applies for this session. */ } return next; })} className="touch-button min-h-10 shrink-0 border border-slate-300 bg-white px-3 text-sm font-semibold" aria-label={`Switch to ${darkTheme ? "light" : "dark"} theme`} title={`Switch to ${darkTheme ? "light" : "dark"} theme`}>{darkTheme ? <Sun size={18} /> : <Moon size={18} />}<span className="hidden sm:inline">{darkTheme ? "Light" : "Dark"}</span></button>
-          <button onClick={() => setOnline((value) => !value)} className="touch-button hidden border border-slate-300 bg-white text-sm font-semibold sm:flex">{online ? <Wifi size={18} /> : <WifiOff size={18} />}{online ? "ONLINE" : "OFFLINE"}</button>
         </div>
       </header>
-      {demoMode && <div className="border-b border-emerald-200 bg-emerald-50"><div className="mx-auto flex max-w-7xl flex-col gap-3 px-4 py-3 sm:flex-row sm:items-center sm:justify-between"><div><p className="font-bold text-emerald-950">Sales demo · synthetic sample data</p><p className="text-sm text-emerald-900">Demo changes are isolated from this browser’s personal inventory.</p></div><div className="flex flex-wrap gap-2"><button onClick={resetSalesDemo} className="min-h-10 rounded-md border border-emerald-300 bg-white px-3 text-sm font-bold text-emerald-900">Reset demo</button><button onClick={exitSalesDemo} className="min-h-10 rounded-md border border-slate-300 bg-white px-3 text-sm font-bold">Exit demo</button></div></div></div>}
       <div className="mx-auto grid max-w-7xl gap-4 px-4 py-4 lg:grid-cols-[260px_1fr]">
         <aside className="hidden rounded-lg border border-slate-200 bg-white p-3 lg:block">
-          <DemoLogin role={role} setRole={setRole} />
           <nav className="mt-4 space-y-2">{navItems.map((item) => <NavButton key={item.label} item={item} active={view === item.label} onClick={() => setView(item.label)} />)}</nav>
           <div className="mt-6 border-t border-slate-200 pt-4"><p className="mb-2 px-2 text-xs font-bold uppercase tracking-wider text-slate-500">Resources</p><div className="space-y-2"><NavButton item={{ label: "How to Use", icon: BookOpen }} active={view === "How to Use"} onClick={() => setView("How to Use")} /><NavButton item={{ label: "Legal & Privacy", icon: Shield }} active={view === "Legal & Privacy"} onClick={() => setView("Legal & Privacy")} /></div></div>
         </aside>
         <section className="mobile-page-content min-w-0 space-y-4 lg:pb-4">
-          <OfflineStatus online={online} pending={!online && activeDrums.length > 0} />
           {view === "Dashboard" && <Dashboard drums={drums} onNew={() => setView("New Drum")} onDelete={deleteDrum} onContinue={(id) => { setSelectedDrumId(id); setView("Active Drums"); }} />}
-          {view === "New Drum" && <DrumForm nextNumber={drums.length + 1} operator="Demo Chemist" onCreate={createDrum} />}
-          {view === "Active Drums" && <ActiveDrums drums={activeDrums} selected={selectedDrum} onSelect={setSelectedDrumId} onDelete={deleteDrum} onUpdate={updateDrum} products={products} saveProduct={(product) => setProducts((current) => [product, ...current])} openAiApiKey={openAiApiKey} correctionStorageKey={activeCorrectionKey} />}
+          {view === "New Drum" && <DrumForm nextNumber={drums.length + 1} operator="Lab Operator" onCreate={createDrum} />}
+          {view === "Active Drums" && <ActiveDrums drums={activeDrums} selected={selectedDrum} onSelect={setSelectedDrumId} onDelete={deleteDrum} onUpdate={updateDrum} products={products} saveProduct={(product) => setProducts((current) => [product, ...current])} openAiApiKey={openAiApiKey} correctionStorageKey={correctionKey} />}
           {view === "History" && <HistoryView drums={completedDrums.length ? completedDrums : drums} onDelete={deleteDrum} onOpen={(id) => { setSelectedDrumId(id); setView("Active Drums"); }} />}
           {view === "PubChem Database" && <ProductDatabase products={products} />}
-          {view === "Settings" && <SettingsView retention={retention} setRetention={setRetention} role={role} openAiApiKey={openAiApiKey} setOpenAiApiKey={setOpenAiApiKey} resetDemo={() => { localStorage.removeItem(demoMode ? salesDemoStorageKey : storageKey); localStorage.removeItem(activeCorrectionKey); setDrums([]); setProducts([]); setOpenAiApiKey(""); setSelectedDrumId(""); }} />}
+          {view === "Settings" && <SettingsView retention={retention} setRetention={setRetention} openAiApiKey={openAiApiKey} setOpenAiApiKey={setOpenAiApiKey} clearDevice={() => { localStorage.removeItem(storageKey); localStorage.removeItem(correctionKey); localStorage.removeItem(`${correctionKey}-sales-demo`); setDrums([]); setProducts([]); setOpenAiApiKey(""); setSelectedDrumId(""); }} />}
           {view === "How to Use" && <HowToUsePage onNavigate={setView} />}
           {view === "Legal & Privacy" && <LegalPrivacyPage />}
           <AppFooter onNavigate={setView} />
@@ -223,14 +147,8 @@ export default function HomePage() {
   );
 }
 
-function DemoLogin({ role, setRole }: { role: Role; setRole: (role: Role) => void }) {
-  return <div className="rounded-lg border border-slate-200 bg-slate-50 p-3"><div className="flex items-center gap-2 font-semibold"><LogIn size={18} /> Demo login</div><select value={role} onChange={(e) => setRole(e.target.value as Role)} className="mt-3 input"><option>Chemist</option><option>Supervisor</option><option>Admin</option></select></div>;
-}
 function NavButton({ item, active, onClick }: { item: { label: View; icon: typeof Home }; active: boolean; onClick: () => void }) {
   return <button onClick={onClick} className={`touch-button w-full justify-start ${active ? "bg-emerald-700 text-white" : "bg-white text-slate-700 hover:bg-slate-50"}`}><item.icon size={20} />{item.label}</button>;
-}
-function OfflineStatus({ online, pending }: { online: boolean; pending: boolean }) {
-  return <div className={`flex items-center gap-2 rounded-lg border px-4 py-3 text-sm font-semibold ${online ? "border-emerald-200 bg-emerald-50 text-emerald-800" : "border-amber-200 bg-amber-50 text-amber-900"}`}>{online ? <Wifi size={18} /> : <WifiOff size={18} />}{online ? "ONLINE" : pending ? "OFFLINE - SYNC PENDING" : "OFFLINE"}</div>;
 }
 function Panel({ title, children }: { title: string; children: React.ReactNode }) {
   return <section className="rounded-lg border border-slate-200 bg-white p-4"><h2 className="mb-3 text-lg font-bold">{title}</h2>{children}</section>;
@@ -855,6 +773,6 @@ function AppFooter({ onNavigate }: { onNavigate: (view: View) => void }) {
   return <footer className="border-t border-slate-200 pt-4 text-xs text-slate-500"><div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"><p>Lab Smalls Scanner <span aria-hidden="true">·</span> Lab Chemicals Inventory Management</p><nav aria-label="Help and legal links" className="flex flex-wrap gap-x-5 gap-y-2"><button type="button" onClick={() => navigate("How to Use")} className="font-semibold hover:text-emerald-700">How to use</button><button type="button" onClick={() => navigate("Legal & Privacy")} className="font-semibold hover:text-emerald-700">Copyright &amp; privacy</button></nav></div><p className="mt-2">© 2026 Lab Smalls Scanner</p></footer>;
 }
 
-function SettingsView({ retention, setRetention, role, openAiApiKey, setOpenAiApiKey, resetDemo }: { retention: RetentionPolicy; setRetention: (value: RetentionPolicy) => void; role: Role; openAiApiKey: string; setOpenAiApiKey: (value: string) => void; resetDemo: () => void }) {
-  return <Panel title="Settings"><div className="grid gap-4"><Label text="Image retention"><select className="input" value={retention} onChange={(e) => setRetention(e.target.value as RetentionPolicy)}><option>Delete after processing</option><option>Keep until drum completion</option><option>Keep permanently</option></select></Label><Label text="OpenAI Vision API key"><input className="input" type="password" placeholder="sk-..." value={openAiApiKey} onChange={(e) => setOpenAiApiKey(e.target.value)} autoComplete="off" /></Label><p className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">OCR uses GPT-5.4 with the original photo and a focused label crop; uncertain names get a second independent read, which may add API usage. Tesseract is the fallback. The API key remains in this browser.</p><p className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">Current policy: {retention}. Drum, image preview, product, OCR, and setting changes are saved only in this browser. Other phones or PCs start with their own separate local inventory.</p><button onClick={resetDemo} className="touch-button justify-center border border-slate-300 bg-white"><RotateCcw size={20} />Clear this device</button><div className="rounded-lg border border-slate-200 p-3"><strong>Role permissions</strong><p className="text-sm text-slate-600">{role}: {role === "Chemist" ? "Create, scan, edit active drums, complete drums, view history." : role === "Supervisor" ? "Chemist permissions plus review all drums." : "Full access including users, products, and settings."}</p></div></div></Panel>;
+function SettingsView({ retention, setRetention, openAiApiKey, setOpenAiApiKey, clearDevice }: { retention: RetentionPolicy; setRetention: (value: RetentionPolicy) => void; openAiApiKey: string; setOpenAiApiKey: (value: string) => void; clearDevice: () => void }) {
+  return <Panel title="Settings"><div className="grid gap-4"><Label text="Image retention"><select className="input" value={retention} onChange={(e) => setRetention(e.target.value as RetentionPolicy)}><option>Delete after processing</option><option>Keep until drum completion</option><option>Keep permanently</option></select></Label><Label text="OpenAI Vision API key"><input className="input" type="password" placeholder="sk-..." value={openAiApiKey} onChange={(e) => setOpenAiApiKey(e.target.value)} autoComplete="off" /></Label><p className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">OCR uses GPT-5.4 with the original photo and a focused label crop; uncertain names get a second independent read, which may add API usage. Tesseract is the fallback. The API key remains in this browser.</p><p className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">Current policy: {retention}. Drum, image preview, product, OCR, and setting changes are saved only in this browser. Other phones or PCs start with their own separate local inventory.</p><button onClick={clearDevice} className="touch-button justify-center border border-slate-300 bg-white"><RotateCcw size={20} />Clear this device</button></div></Panel>;
 }

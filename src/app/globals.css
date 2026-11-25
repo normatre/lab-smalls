@@ -29,6 +29,41 @@ textarea {
   font: inherit;
 }
 
+button,
+a {
+  -webkit-tap-highlight-color: transparent;
+}
+
+button {
+  cursor: pointer;
+  transition: transform 120ms ease, filter 120ms ease, box-shadow 120ms ease;
+}
+
+button:active:not(:disabled) {
+  transform: scale(0.975);
+  filter: brightness(0.92);
+}
+
+button:focus-visible,
+a:focus-visible {
+  outline: 3px solid #34d399;
+  outline-offset: 3px;
+}
+
+button:disabled {
+  cursor: not-allowed;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  button {
+    transition: none;
+  }
+
+  button:active:not(:disabled) {
+    transform: none;
+  }
+}
+
 .touch-button {
   min-height: 44px;
   display: inline-flex;

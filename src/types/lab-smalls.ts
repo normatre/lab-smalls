@@ -1,4 +1,3 @@
-export type Role = "Chemist" | "Supervisor" | "Admin";
 export type Unit = "g" | "kg" | "mL" | "L";
 export type PhysicalState = "Solid" | "Liquid" | "Gas" | "Unknown";
 export type FieldSource = "label" | "database" | "user" | "inferred" | "image" | "voice";
@@ -73,16 +72,6 @@ export type Product = {
   typicalConcentration?: string;
   unit?: Unit;
   physicalState: PhysicalState;
-};
-
-export type AuditEvent = {
-  id: string;
-  drumId: string;
-  action: string;
-  user: string;
-  timestamp: string;
-  previousValue?: unknown;
-  newValue?: unknown;
 };
 
 export type DetectedChemical = Omit<InventoryItem, "id" | "status">;

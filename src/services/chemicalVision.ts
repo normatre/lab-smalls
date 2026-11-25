@@ -131,7 +131,7 @@ const detected = ({
   ocrCategories,
 });
 
-export class MockChemicalVisionService implements ChemicalVisionService {
+export class BrowserChemicalVisionService implements ChemicalVisionService {
   async analyzeChemicalImage(image: File | Blob, options?: { openAiApiKey?: string }): Promise<{ items: DetectedChemical[]; warnings: string[] }> {
     await new Promise((resolve) => setTimeout(resolve, 350));
 
@@ -1192,4 +1192,4 @@ async function profileImage(image: File | Blob): Promise<VisionProfile> {
   }
 }
 
-export const chemicalVisionService: ChemicalVisionService = new MockChemicalVisionService();
+export const chemicalVisionService: ChemicalVisionService = new BrowserChemicalVisionService();
